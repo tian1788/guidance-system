@@ -1,0 +1,39 @@
+Read me!!!!!!!!!!
+
+Supabase setup (MySQL removed)
+
+1) Run this schema in Supabase SQL Editor:
+C:\xampp\htdocs\bpm commision\supabase\departments\09-guidance.sql
+
+Optional local copy in this project:
+- guidance/supabase-guidance.sql
+
+2) Run integration schema for cross-department sync:
+- guidance/supabase-integration-flow.sql
+
+3) Run seed data (for sample login accounts):
+- guidance/supabase-seed.sql
+
+4) Create .env from .env.example in guidance folder and fill your Supabase DB credentials.
+
+5) In XAMPP php.ini, enable these extensions if disabled:
+- extension=pdo_pgsql
+- extension=pgsql
+
+6) Start Apache/PHP and open:
+http://localhost/guidance/
+
+7) Open Admin > Integration Hub for end-to-end department sync actions.
+Supported Guidance flows:
+- Receives: Student Personal Information, Student Academic Records, Health Report, Discipline Report
+- Sends: Counseling Report (Registrar, PMED), Health Concern (Clinic), Discipline Report (Prefect), Student Recommendation (CRAD)
+
+Login account samples:
+admin@gmail.com
+student@gmail.com
+teacher@gmail.com
+
+Passwords:
+admin@gmail.com = admin123
+student@gmail.com = 12345
+teacher@gmail.com = 12345
