@@ -23,17 +23,6 @@ function guidance_decode_json_payload($value): array
     return is_array($decoded) ? $decoded : [];
 }
 
-function guidance_count_result($conn, string $sql): int
-{
-    $result = $conn->query($sql);
-    if (!is_object($result) || !method_exists($result, 'fetch_assoc')) {
-        return 0;
-    }
-
-    $row = $result->fetch_assoc();
-    return (int) ($row['total'] ?? 0);
-}
-
 function guidance_is_prefect_report_locked(array $event): bool
 {
     $payload = guidance_decode_json_payload((string) ($event['payload_json'] ?? ''));
@@ -345,11 +334,21 @@ if (!is_object($outbound) || !method_exists($outbound, 'fetch_assoc')) {
         $messageType = 'error';
     }
 }
-$inboundCount = guidance_count_result($conn, "SELECT COUNT(*) AS total FROM integration_flows WHERE direction='INBOUND' AND target_department='guidance'");
-$outboundCount = guidance_count_result($conn, "SELECT COUNT(*) AS total FROM integration_flows WHERE direction='OUTBOUND' AND source_department='guidance'");
-$prefectUnreadCount = guidance_count_result($conn, "SELECT COUNT(*) AS total FROM integration_flows WHERE direction='INBOUND' AND target_department='guidance' AND source_department='prefect' AND status='Received'");
-$failedCount = guidance_count_result($conn, "SELECT COUNT(*) AS total FROM integration_flows WHERE direction='OUTBOUND' AND source_department='guidance' AND status='Failed'");
-$routeCount = guidance_count_result($conn, "SELECT COUNT(DISTINCT route_key) AS total FROM integration_flows WHERE route_key IS NOT NULL");
+$dashboardCountsResult = $conn->query("SELECT
+    SUM(CASE WHEN direction='INBOUND' AND target_department='guidance' THEN 1 ELSE 0 END) AS inbound_count,
+    SUM(CASE WHEN direction='OUTBOUND' AND source_department='guidance' THEN 1 ELSE 0 END) AS outbound_count,
+    SUM(CASE WHEN direction='INBOUND' AND target_department='guidance' AND source_department='prefect' AND status='Received' THEN 1 ELSE 0 END) AS prefect_unread_count,
+    SUM(CASE WHEN direction='OUTBOUND' AND source_department='guidance' AND status='Failed' THEN 1 ELSE 0 END) AS failed_count,
+    COUNT(DISTINCT CASE WHEN route_key IS NOT NULL THEN route_key END) AS route_count
+FROM integration_flows");
+$dashboardCounts = (is_object($dashboardCountsResult) && method_exists($dashboardCountsResult, 'fetch_assoc'))
+    ? ($dashboardCountsResult->fetch_assoc() ?: [])
+    : [];
+$inboundCount = (int) ($dashboardCounts['inbound_count'] ?? 0);
+$outboundCount = (int) ($dashboardCounts['outbound_count'] ?? 0);
+$prefectUnreadCount = (int) ($dashboardCounts['prefect_unread_count'] ?? 0);
+$failedCount = (int) ($dashboardCounts['failed_count'] ?? 0);
+$routeCount = (int) ($dashboardCounts['route_count'] ?? 0);
 
 guidance_render_shell_start(
     'Integration Hub',

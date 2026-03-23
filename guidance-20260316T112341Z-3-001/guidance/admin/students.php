@@ -65,18 +65,19 @@ if (isset($_GET['delete'])) {
 }
 
 $result = $conn->query("SELECT * FROM students ORDER BY name ASC, student_id ASC LIMIT 80");
-$studentTotalResult = $conn->query("SELECT COUNT(*) AS total FROM students");
-$studentTotalRow = (is_object($studentTotalResult) && method_exists($studentTotalResult, 'fetch_assoc')) ? $studentTotalResult->fetch_assoc() : ['total' => 0];
-$studentTotal = (int) ($studentTotalRow['total'] ?? 0);
-$courseTotalResult = $conn->query("SELECT COUNT(DISTINCT course) AS total FROM students WHERE COALESCE(course, '') <> ''");
-$courseTotalRow = (is_object($courseTotalResult) && method_exists($courseTotalResult, 'fetch_assoc')) ? $courseTotalResult->fetch_assoc() : ['total' => 0];
-$courseTotal = (int) ($courseTotalRow['total'] ?? 0);
-$yearTotalResult = $conn->query("SELECT COUNT(DISTINCT year_level) AS total FROM students WHERE COALESCE(year_level, '') <> ''");
-$yearTotalRow = (is_object($yearTotalResult) && method_exists($yearTotalResult, 'fetch_assoc')) ? $yearTotalResult->fetch_assoc() : ['total' => 0];
-$yearTotal = (int) ($yearTotalRow['total'] ?? 0);
-$registrarSyncedResult = $conn->query("SELECT COUNT(*) AS total FROM students WHERE registrar_status='Synced'");
-$registrarSyncedRow = (is_object($registrarSyncedResult) && method_exists($registrarSyncedResult, 'fetch_assoc')) ? $registrarSyncedResult->fetch_assoc() : ['total' => 0];
-$registrarSynced = (int) ($registrarSyncedRow['total'] ?? 0);
+$studentStatsResult = $conn->query("SELECT
+    COUNT(*) AS student_total,
+    COUNT(DISTINCT CASE WHEN COALESCE(course, '') <> '' THEN course END) AS course_total,
+    COUNT(DISTINCT CASE WHEN COALESCE(year_level, '') <> '' THEN year_level END) AS year_total,
+    SUM(CASE WHEN registrar_status = 'Synced' THEN 1 ELSE 0 END) AS registrar_synced
+FROM students");
+$studentStats = (is_object($studentStatsResult) && method_exists($studentStatsResult, 'fetch_assoc'))
+    ? ($studentStatsResult->fetch_assoc() ?: [])
+    : [];
+$studentTotal = (int) ($studentStats['student_total'] ?? 0);
+$courseTotal = (int) ($studentStats['course_total'] ?? 0);
+$yearTotal = (int) ($studentStats['year_total'] ?? 0);
+$registrarSynced = (int) ($studentStats['registrar_synced'] ?? 0);
 
 guidance_render_shell_start(
     'Student Info',
