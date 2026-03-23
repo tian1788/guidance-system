@@ -187,7 +187,22 @@ function guidance_integration_route_exists($conn, string $sourceDepartment, stri
     foreach ($sqls as $sql) {
         $result = @$conn->query($sql);
         if (is_object($result) && method_exists($result, 'fetch_assoc')) {
-            return (bool) $result->fetch_assoc();
+            if ($result->fetch_assoc()) {
+                return true;
+            }
+        }
+    }
+
+    // When integration_routes is not deployed or the row was never seeded (common on MySQL/XAMPP),
+    // still allow outbound flows that are defined in guidance_integration_departments() — same
+    // contract as guidance_integration_resolve_flow_type() for guidance → partner.
+    if ($sourceDepartment === 'guidance') {
+        $depts = guidance_integration_departments();
+        if (isset($depts[$targetDepartment])) {
+            $outbound = $depts[$targetDepartment]['outbound_flows'] ?? [];
+            if (isset($outbound[$eventCode])) {
+                return true;
+            }
         }
     }
 

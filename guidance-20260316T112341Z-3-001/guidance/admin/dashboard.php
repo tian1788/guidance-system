@@ -165,6 +165,7 @@ $actionQueue = array_slice($actionQueue, 0, 6);
 $registrarInbound = guidance_count($conn, "SELECT * FROM integration_flows WHERE direction='INBOUND' AND target_department='guidance' AND source_department='registrar'");
 $prefectExchange = guidance_count($conn, "SELECT * FROM integration_flows WHERE (target_department='prefect' AND source_department='guidance') OR (target_department='guidance' AND source_department='prefect')");
 $pmedExchange = guidance_count($conn, "SELECT * FROM integration_flows WHERE (target_department='pmed' AND source_department='guidance') OR (target_department='guidance' AND source_department='pmed')");
+$hrOutbound = guidance_count($conn, "SELECT * FROM integration_flows WHERE direction='OUTBOUND' AND source_department='guidance' AND target_department='hr'");
 
 $routingBoard = [
     [
@@ -184,6 +185,12 @@ $routingBoard = [
         'status' => $pmedExchange > 0 ? 'Monitoring updates active' : 'No active PMED routing yet',
         'class' => $pmedExchange > 0 ? 'monitoring' : 'pending',
         'note' => 'Counseling outcomes, wellness summaries, and incident monitoring updates are routed to PMED.',
+    ],
+    [
+        'office' => 'Human Resources',
+        'status' => $hrOutbound > 0 ? 'Staffing or employee requests queued to HR' : 'Request additional staff or employee support from HR when needed',
+        'class' => $hrOutbound > 0 ? 'synced' : 'pending',
+        'note' => 'Submit manpower and employee-support requests through the Integration Hub; HR receives them via the outbound integration queue.',
     ],
 ];
 
@@ -262,7 +269,11 @@ $brandLogo = '../../../../Registrar/assets/img/logo.png';
         <div class="dashboard-hero-main">
             <div class="hero-badge">Guidance Management Dashboard</div>
             <h1>Guidance Department Operations Board</h1>
-            <p>Track the full Guidance workflow from Registrar student intake to counseling, incidents, referrals, behavior monitoring, and direct sharing with Registrar, Prefect, and PMED.</p>
+            <p>Track the full Guidance workflow from Registrar student intake to counseling, incidents, referrals, behavior monitoring, and direct sharing with Registrar, Prefect, PMED, and HR.</p>
+            <div class="hero-actions" style="display:flex;flex-wrap:wrap;gap:0.65rem;margin-top:1rem">
+                <a class="btn-primary" href="integration.php#request-employee-hr">Request staff from HR</a>
+                <a class="btn-secondary" href="integration.php#hr-request">HR directory &amp; requests</a>
+            </div>
             <div class="hero-meta-row">
                 <span><?php echo $studentRecords; ?> student records in Guidance</span>
                 <span><?php echo $pendingCounseling; ?> counseling items waiting</span>
@@ -300,34 +311,10 @@ $brandLogo = '../../../../Registrar/assets/img/logo.png';
     <section class="form-box" id="hr-request-form">
         <div class="panel-heading">
             <div>
-                <h2>Request Employee Information from HR</h2>
-                <p>Use this form to send requests to the HR department for employee-related information.</p>
+                <h2>Request employee information from HR</h2>
+                <p>Use this form for verification, leave balance, or other employee data requests (specific employee ID).</p>
             </div>
-        </div>
-        <form method="POST" class="form-stack">
-            <input name="employee_id" id="employee-id-input" placeholder="Employee ID" required>
-            <select name="request_type" id="request-type-input" required>
-                <option value="">Select Request Type</option>
-                <option value="Verification">Verification</option>
-                <option value="Leave Balance">Leave Balance</option>
-                <option value="Salary Information">Salary Information</option>
-                <option value="Other">Other</option>
-            </select>
-            <textarea name="request_details" id="request-details-input" placeholder="Details of your request"></textarea>
-            <button name="send_hr_request">Send Request to HR</button>
-        </form>
-    </section>
-
-    <?php if (isset($_POST['send_hr_request']) && $message !== ''): ?>
-        <div class="flash-message <?php echo $messageType === 'error' ? 'flash-error' : ''; ?>"><?php echo guidance_escape($message); ?></div>
-    <?php endif; ?>
-
-    <section class="form-box" id="hr-request-form">
-        <div class="panel-heading">
-            <div>
-                <h2>Request Employee Information from HR</h2>
-                <p>Use this form to send requests to the HR department for employee-related information.</p>
-            </div>
+            <a class="btn-secondary" href="integration.php#request-employee-hr">Request additional staff (manpower)</a>
         </div>
         <form method="POST" class="form-stack">
             <input name="employee_id" id="employee-id-input" placeholder="Employee ID" required>
@@ -358,6 +345,7 @@ $brandLogo = '../../../../Registrar/assets/img/logo.png';
             <a class="btn-secondary" href="crisis.php">Open Incident Desk</a>
             <a class="btn-secondary" href="survey.php">Review Feedback</a>
             <a class="btn-secondary" href="integration.php">Integration Hub</a>
+            <a class="btn-secondary" href="integration.php#request-employee-hr">Request staff from HR</a>
         </div>
     </section>
 
@@ -458,7 +446,7 @@ $brandLogo = '../../../../Registrar/assets/img/logo.png';
         <div class="section-head">
             <div>
                 <h2>Department Integration Tracker</h2>
-                <p>Live view of the three active partner departments in the Guidance end-to-end flow.</p>
+                <p>Live view of partner departments in the Guidance end-to-end flow.</p>
             </div>
         </div>
         <div class="integration-grid">

@@ -3,8 +3,29 @@ session_start();
 include "../config/db.php";
 include "_shared.php";
 include "integration_helpers.php";
+require_once __DIR__ . '/../includes/guidance_supabase_hr_staff_request.php';
 
 guidance_integration_ensure_schema($conn);
+
+/** Canonical HR staff role_type values (keep aligned with shared/hrStaffIntegrationRoles.ts). */
+$guidanceHrStaffRoles = [
+    ['value' => 'doctor', 'title' => 'Doctor'],
+    ['value' => 'nurse', 'title' => 'Nurse'],
+    ['value' => 'medical_officer', 'title' => 'Medical Officer'],
+    ['value' => 'health_aide', 'title' => 'Health Aide'],
+    ['value' => 'cashier_staff', 'title' => 'Cashier Staff'],
+    ['value' => 'billing_officer', 'title' => 'Billing Officer'],
+    ['value' => 'registrar_staff', 'title' => 'Registrar Staff'],
+    ['value' => 'enrollment_officer', 'title' => 'Enrollment Officer'],
+    ['value' => 'research_coordinator', 'title' => 'Research Coordinator'],
+    ['value' => 'crad_officer', 'title' => 'CRAD Officer'],
+    ['value' => 'discipline_officer', 'title' => 'Discipline Officer'],
+    ['value' => 'prefect_coordinator', 'title' => 'Prefect Coordinator'],
+    ['value' => 'counselor', 'title' => 'Counselor'],
+    ['value' => 'guidance_associate', 'title' => 'Guidance Associate'],
+    ['value' => 'lab_technician', 'title' => 'Lab Technician'],
+    ['value' => 'it_staff', 'title' => 'IT Staff'],
+];
 
 $departments = guidance_integration_departments();
 $message = '';
@@ -205,44 +226,93 @@ if (isset($_POST['sync_registrar_student'])) {
 }
 
 if (isset($_POST['request_hr_employee'])) {
-    $requestedPosition = trim((string) ($_POST['requested_position'] ?? ''));
-    $requestReason = trim((string) ($_POST['request_reason'] ?? ''));
-    $preferredEmployeeId = trim((string) ($_POST['preferred_employee_id'] ?? ''));
-    $preferredEmployeeName = trim((string) ($_POST['preferred_employee_name'] ?? ''));
-
-    $summary = trim(implode(' | ', array_filter([
-        $requestedPosition !== '' ? ('Requested Role: ' . $requestedPosition) : '',
-        $requestReason !== '' ? ('Reason: ' . $requestReason) : '',
-        $preferredEmployeeId !== '' ? ('Preferred Employee ID: ' . $preferredEmployeeId) : '',
-        $preferredEmployeeName !== '' ? ('Preferred Employee Name: ' . $preferredEmployeeName) : '',
-    ])));
-
-    if ($requestReason === '') {
-        $message = 'Please provide a request reason before sending to HR.';
-        $messageType = 'error';
-    } else {
-
-    $queued = guidance_integration_queue_outbound($conn, 'hr', 'employee_support_request', [
-        'reference_table' => 'guidance',
-        'reference_id' => null,
-        'student_id' => null,
-        'student_name' => null,
-        'payload_summary' => $summary !== '' ? $summary : 'Employee support request from Guidance.',
-        'payload_json' => [
-            'requested_position' => $requestedPosition !== '' ? $requestedPosition : null,
-            'request_reason' => $requestReason,
-            'preferred_employee_id' => $preferredEmployeeId !== '' ? $preferredEmployeeId : null,
-            'preferred_employee_name' => $preferredEmployeeName !== '' ? $preferredEmployeeName : null,
-            'source_department' => 'guidance',
-        ],
-    ]);
-
-    if ($queued) {
-        $message = 'Employee request was sent to HR successfully.';
-    } else {
-        $message = 'Unable to send employee request to HR.';
-        $messageType = 'error';
+    $roleType = trim((string) ($_POST['hr_role_type'] ?? ''));
+    $allowedRoleValues = array_map(static function (array $r): string {
+        return (string) ($r['value'] ?? '');
+    }, $guidanceHrStaffRoles);
+    $roleTitle = '';
+    foreach ($guidanceHrStaffRoles as $r) {
+        if (($r['value'] ?? '') === $roleType) {
+            $roleTitle = (string) ($r['title'] ?? $roleType);
+            break;
+        }
     }
+
+    $requestedCount = max(1, (int) ($_POST['requested_count'] ?? 1));
+    $requestedBy = trim((string) ($_POST['requested_by'] ?? ''));
+    if ($requestedBy === '') {
+        $requestedBy = 'Guidance';
+    }
+    $requestNotes = trim((string) ($_POST['request_notes'] ?? ''));
+
+    if (!in_array($roleType, $allowedRoleValues, true)) {
+        $message = 'Please select a valid requested role.';
+        $messageType = 'error';
+    } else {
+        $requestReason = $requestNotes !== ''
+            ? $requestNotes
+            : ('Staffing request: ' . $roleTitle . ' × ' . $requestedCount);
+
+        $summary = trim(implode(' | ', array_filter([
+            'Requested role: ' . $roleTitle,
+            'Count: ' . $requestedCount,
+            $requestNotes !== '' ? ('Notes: ' . $requestNotes) : '',
+            'Requested by: ' . $requestedBy,
+        ], static function ($line) {
+            return $line !== '';
+        })));
+
+        $correlationId = 'guidance_hr_' . bin2hex(random_bytes(8));
+
+        $queued = guidance_integration_queue_outbound($conn, 'hr', 'employee_support_request', [
+            'reference_table' => 'guidance',
+            'reference_id' => null,
+            'student_id' => null,
+            'student_name' => null,
+            'correlation_id' => $correlationId,
+            'payload_summary' => $summary !== '' ? $summary : 'Employee support request from Guidance.',
+            'payload_json' => [
+                'hr_role_type' => $roleType,
+                'requested_position' => $roleTitle,
+                'requested_count' => $requestedCount,
+                'requested_by' => $requestedBy,
+                'request_notes' => $requestNotes !== '' ? $requestNotes : null,
+                'request_reason' => $requestReason,
+                'source_department' => 'guidance',
+            ],
+        ]);
+
+        if (!$queued) {
+            $message = 'Unable to send employee request to HR.';
+            $messageType = 'error';
+        } else {
+            try {
+                $hrPush = guidance_push_hr_staff_request_to_hr(
+                    $roleType,
+                    $requestedCount,
+                    $roleTitle,
+                    $requestReason,
+                    $requestedBy,
+                    [
+                        'correlation_id' => $correlationId,
+                        'payload_summary' => $summary,
+                    ]
+                );
+                $message = 'Employee request was sent to HR successfully. HR reference: ' . $hrPush['request_reference'] . '.';
+            } catch (Throwable $e) {
+                error_log('[Guidance] HR staff PostgREST push failed: ' . $e->getMessage());
+                $conn->query(
+                    'UPDATE integration_flows SET status=\'Failed\', last_error='
+                    . guidance_integration_quote($e->getMessage())
+                    . ", updated_at=NOW() WHERE correlation_id="
+                    . guidance_integration_quote($correlationId)
+                    . " AND direction='OUTBOUND'"
+                );
+                $message = 'Request was logged in Guidance but HR did not receive it. Add SUPABASE_URL and SUPABASE_ANON_KEY to Guidance .env (same project as HR). Detail: '
+                    . $e->getMessage();
+                $messageType = 'error';
+            }
+        }
     }
 }
 
@@ -419,9 +489,9 @@ guidance_render_shell_start(
     [
         ['label' => 'Prefect Report Inbox', 'href' => '#prefect-inbox', 'class' => 'btn-primary'],
         ['label' => 'Registrar Feed', 'href' => '#registrar-feed', 'class' => 'btn-secondary'],
-        ['label' => 'Request HR Employee', 'href' => '#hr-request', 'class' => 'btn-secondary'],
+        ['label' => 'Request staff from HR', 'href' => '#request-employee-hr', 'class' => 'btn-secondary'],
     ],
-    ['Receive from Prefect', 'Mark as Read', 'Forward to PMED', 'Fetch Registrar Student Data', 'Request HR Employee']
+    ['Receive from Prefect', 'Mark as Read', 'Forward to PMED', 'Fetch Registrar Student Data', 'Request staff from HR']
 );
 ?>
 
@@ -485,6 +555,143 @@ guidance_render_shell_start(
     @media screen and (max-width: 768px) {
         .outbound-controls .search-wide {
             grid-column: span 1;
+        }
+    }
+
+    /* HR staff request modal — aligned with PMED / HR dialog layout */
+    .hr-req-modal-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.4);
+        z-index: 9999;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+    }
+    .hr-req-modal-card {
+        background: #fff;
+        width: min(680px, 100%);
+        border-radius: 16px;
+        padding: 20px 22px 16px;
+        box-shadow: 0 24px 48px rgba(15, 23, 42, 0.18);
+        border: 1px solid rgba(216, 223, 236, 0.95);
+    }
+    .hr-req-modal-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 12px;
+        margin-bottom: 16px;
+    }
+    .hr-req-modal-head h3 {
+        margin: 0;
+        font-size: 1.15rem;
+        font-weight: 800;
+        color: #14223d;
+        line-height: 1.35;
+    }
+    .hr-req-modal-close {
+        flex-shrink: 0;
+        border: 0;
+        background: #2f5c9f;
+        color: #fff;
+        font-size: 12px;
+        font-weight: 700;
+        padding: 8px 14px;
+        border-radius: 999px;
+        cursor: pointer;
+    }
+    .hr-req-modal-close:hover {
+        opacity: 0.92;
+    }
+    .hr-req-modal-form {
+        display: grid;
+        gap: 14px;
+    }
+    .hr-req-grid-2 {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+        align-items: start;
+    }
+    .hr-req-grid-by {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+        gap: 14px;
+        align-items: start;
+    }
+    .hr-req-field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+    .hr-req-label {
+        font-size: 12px;
+        font-weight: 700;
+        color: #5d6c86;
+        letter-spacing: 0.02em;
+    }
+    .hr-req-field input,
+    .hr-req-field select,
+    .hr-req-field textarea {
+        width: 100%;
+        border: 1px solid #c5d0e4;
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 14px;
+        font-family: inherit;
+        background: #fff;
+        color: #14223d;
+    }
+    .hr-req-field textarea {
+        min-height: 72px;
+        resize: vertical;
+    }
+    .hr-req-field input:focus,
+    .hr-req-field select:focus,
+    .hr-req-field textarea:focus {
+        outline: none;
+        border-color: #2f5c9f;
+        box-shadow: 0 0 0 3px rgba(47, 92, 159, 0.15);
+    }
+    .hr-req-modal-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 6px;
+        padding-top: 8px;
+    }
+    .hr-req-btn-text {
+        border: 0;
+        background: transparent;
+        color: #3d4f6f;
+        font-weight: 600;
+        font-size: 14px;
+        padding: 8px 14px;
+        cursor: pointer;
+        border-radius: 8px;
+    }
+    .hr-req-btn-text:hover {
+        background: rgba(47, 92, 159, 0.08);
+    }
+    .hr-req-btn-primary {
+        border: 0;
+        background: transparent;
+        color: #1d4ed8;
+        font-weight: 700;
+        font-size: 14px;
+        padding: 8px 14px;
+        cursor: pointer;
+        border-radius: 8px;
+    }
+    .hr-req-btn-primary:hover {
+        background: rgba(29, 78, 216, 0.08);
+    }
+    @media screen and (max-width: 640px) {
+        .hr-req-grid-2,
+        .hr-req-grid-by {
+            grid-template-columns: 1fr;
         }
     }
 </style>
@@ -727,7 +934,7 @@ guidance_render_shell_start(
             <p>Employee information fetched from HR integration source.</p>
         </div>
         <div>
-            <button type="button" class="btn-secondary" id="open-hr-request-modal">Request Employee from HR</button>
+            <button type="button" class="btn-secondary" id="open-hr-request-modal">Request staff from HR</button>
         </div>
     </div>
     <div class="table-wrap">
@@ -889,53 +1096,81 @@ guidance_render_shell_start(
     </div>
 </div>
 
-<div id="hr-request-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35); z-index:9999; align-items:center; justify-content:center; padding:16px;">
-    <div style="background:#fff; width:min(680px, 100%); border-radius:12px; padding:16px; box-shadow:0 16px 30px rgba(0,0,0,0.2);">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-            <h3 style="margin:0;">Request Employee from HR</h3>
-            <button type="button" id="close-hr-request-modal">Close</button>
+<div id="hr-request-modal" class="hr-req-modal-overlay" style="display:none" aria-hidden="true">
+    <div class="hr-req-modal-card" role="dialog" aria-labelledby="hr-req-modal-title">
+        <div class="hr-req-modal-head">
+            <h3 id="hr-req-modal-title">Request Additional Staff from HR</h3>
+            <button type="button" class="hr-req-modal-close" id="close-hr-request-modal">Close</button>
         </div>
-        <p style="margin:0 0 12px 0; color:#5c6470;">Submit an employee request with the reason and optional preferred employee details.</p>
-        <form method="POST" class="form-stack">
-            <input name="requested_position" placeholder="Requested Position / Role (optional)">
-            <textarea name="request_reason" placeholder="Reason for employee request" required></textarea>
-            <div class="split-layout">
-                <input name="preferred_employee_id" placeholder="Preferred Employee ID (optional)" list="hr-employee-id-list">
-                <input name="preferred_employee_name" placeholder="Preferred Employee Name (optional)" list="hr-employee-name-list">
+        <form method="POST" class="hr-req-modal-form">
+            <div class="hr-req-grid-2">
+                <label class="hr-req-field">
+                    <span class="hr-req-label">Requested role</span>
+                    <select name="hr_role_type" required>
+                        <?php foreach ($guidanceHrStaffRoles as $opt): ?>
+                            <option value="<?php echo guidance_escape($opt['value']); ?>"<?php echo ($opt['value'] === 'counselor') ? ' selected' : ''; ?>>
+                                <?php echo guidance_escape($opt['title']); ?>
+                            </option>
+                        <?php endforeach; ?>
+                    </select>
+                </label>
+                <label class="hr-req-field">
+                    <span class="hr-req-label">Requested count</span>
+                    <input type="number" name="requested_count" min="1" value="1" required>
+                </label>
             </div>
-            <button name="request_hr_employee">Send Request to HR</button>
+            <div class="hr-req-grid-by">
+                <label class="hr-req-field">
+                    <span class="hr-req-label">Requested by</span>
+                    <input type="text" name="requested_by" value="Guidance Admin" autocomplete="name">
+                </label>
+                <label class="hr-req-field">
+                    <span class="hr-req-label">Request notes</span>
+                    <textarea name="request_notes" rows="3" placeholder="Request notes"></textarea>
+                </label>
+            </div>
+            <div class="hr-req-modal-actions">
+                <button type="button" class="hr-req-btn-text" id="hr-req-cancel-btn">Cancel</button>
+                <button type="submit" class="hr-req-btn-primary" name="request_hr_employee" value="1">Send Request</button>
+            </div>
         </form>
     </div>
 </div>
 
-<datalist id="hr-employee-id-list">
-    <?php foreach ($hrRows as $employee): ?>
-        <option value="<?php echo guidance_escape($employee['employee_id'] ?? ''); ?>"></option>
-    <?php endforeach; ?>
-</datalist>
-<datalist id="hr-employee-name-list">
-    <?php foreach ($hrRows as $employee): ?>
-        <option value="<?php echo guidance_escape($employee['employee_name'] ?? ''); ?>"></option>
-    <?php endforeach; ?>
-</datalist>
-
 <script>
 (() => {
-    const topHrRequestButton = document.querySelector('a[href="#hr-request"]');
     const openHrRequestModalButton = document.getElementById('open-hr-request-modal');
     const hrRequestModal = document.getElementById('hr-request-modal');
     const closeHrRequestModalButton = document.getElementById('close-hr-request-modal');
 
     const openHrRequestModal = () => {
-        if (hrRequestModal) hrRequestModal.style.display = 'flex';
+        if (hrRequestModal) {
+            hrRequestModal.style.display = 'flex';
+            hrRequestModal.setAttribute('aria-hidden', 'false');
+        }
     };
 
-    if (topHrRequestButton) {
-        topHrRequestButton.addEventListener('click', (event) => {
+    const closeHrRequestModal = () => {
+        if (hrRequestModal) {
+            hrRequestModal.style.display = 'none';
+            hrRequestModal.setAttribute('aria-hidden', 'true');
+        }
+    };
+
+    const hrReqCancelBtn = document.getElementById('hr-req-cancel-btn');
+    if (hrReqCancelBtn) {
+        hrReqCancelBtn.addEventListener('click', () => closeHrRequestModal());
+    }
+
+    document.querySelectorAll('a[href="#hr-request"], a[href="#request-employee-hr"]').forEach((btn) => {
+        btn.addEventListener('click', (event) => {
             event.preventDefault();
             openHrRequestModal();
+            if (btn.getAttribute('href') === '#hr-request') {
+                document.getElementById('hr-request')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
         });
-    }
+    });
 
     if (openHrRequestModalButton) {
         openHrRequestModalButton.addEventListener('click', () => {
@@ -943,17 +1178,27 @@ guidance_render_shell_start(
         });
     }
 
-    if (closeHrRequestModalButton && hrRequestModal) {
-        closeHrRequestModalButton.addEventListener('click', () => {
-            hrRequestModal.style.display = 'none';
-        });
+    if (closeHrRequestModalButton) {
+        closeHrRequestModalButton.addEventListener('click', () => closeHrRequestModal());
+    }
 
+    if (hrRequestModal) {
         hrRequestModal.addEventListener('click', (event) => {
             if (event.target === hrRequestModal) {
-                hrRequestModal.style.display = 'none';
+                closeHrRequestModal();
             }
         });
     }
+
+    const openHrModalFromHash = () => {
+        const h = (location.hash || '').replace(/^#/, '');
+        if (h === 'request-employee-hr' || h === 'hr-staff-request') {
+            openHrRequestModal();
+            history.replaceState(null, '', location.pathname + location.search);
+        }
+    };
+    window.addEventListener('hashchange', openHrModalFromHash);
+    openHrModalFromHash();
 
     const viewModal = document.getElementById('report-view-modal');
     const closeViewBtn = document.getElementById('close-view-modal');

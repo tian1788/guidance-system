@@ -35,7 +35,7 @@ export async function dispatchStaffWelfareReferralToHR(
   const result = await dispatchDepartmentFlow(
     'guidance',
     'hr',
-    'staff_welfare_referrals',
+    'hr_staff_request',
     payload,
     sourceRecordId
   );
