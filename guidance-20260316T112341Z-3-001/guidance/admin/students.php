@@ -24,7 +24,7 @@ if (isset($_GET['lookup_student_id'])) {
         'ok' => true,
         'data' => [
             'student_id' => (string) ($student['student_id'] ?? ''),
-            'name' => (string) ($student['student_name'] ?? ''),
+            'name' => (string) ($student['name'] ?? $student['student_name'] ?? ''),
             'course' => (string) ($student['course'] ?? ''),
             'year_level' => (string) ($student['year_level'] ?? ''),
             'section_name' => (string) ($student['section_name'] ?? ''),

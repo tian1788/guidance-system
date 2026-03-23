@@ -310,18 +310,34 @@ function guidance_integration_ensure_schema($conn): void
 
 function guidance_integration_fetch_rows($conn, string $sql): ?array
 {
-    $rows = [];
     $result = $conn->query($sql);
 
     if (!is_object($result) || !method_exists($result, 'fetch_assoc')) {
         return null;
     }
 
+    if (method_exists($result, 'fetch_all')) {
+        return $result->fetch_all(MYSQLI_ASSOC);
+    }
+
+    $rows = [];
     while ($row = $result->fetch_assoc()) {
         $rows[] = $row;
     }
 
     return $rows;
+}
+
+function guidance_integration_fetch_one_row($conn, string $sql): ?array
+{
+    $result = $conn->query($sql);
+
+    if (!is_object($result) || !method_exists($result, 'fetch_assoc')) {
+        return null;
+    }
+
+    $row = $result->fetch_assoc();
+    return is_array($row) ? $row : null;
 }
 
 function guidance_integration_fetch_dataset($conn, array $sources): array
@@ -741,6 +757,59 @@ function guidance_fetch_registrar_student_by_id($conn, string $studentId): ?arra
     // For now, we will use the local lookup.
     // In a real scenario, this would involve an API call to the Registrar system.
     return guidance_find_student_by_student_id($conn, $studentId);
+}
+
+function guidance_fetch_registrar_student_by_source_record_id($conn, string $sourceRecordId): ?array
+{
+    $sourceRecordId = trim($sourceRecordId);
+    if ($sourceRecordId === '' || !preg_match('/^\d+$/', $sourceRecordId)) {
+        return null;
+    }
+
+    $recordId = (int) $sourceRecordId;
+
+    $bridgeSql = "SELECT
+        rs.id AS source_record_id,
+        rs.student_no AS student_id,
+        TRIM(CONCAT_WS(' ', rs.first_name, rs.last_name)) AS student_name,
+        rs.program AS course,
+        rs.year_level,
+        COALESCE(MAX(re.status), rs.status, 'Active') AS enrollment_status,
+        COALESCE(STRING_AGG(DISTINCT rc.class_code, ', ' ORDER BY rc.class_code), '') AS subject_load,
+        COUNT(DISTINCT rc.id) AS subject_count,
+        MAX(rs.created_at) AS source_updated_at
+    FROM public.registrar_students rs
+    LEFT JOIN public.registrar_enrollments re ON re.student_id = rs.id
+    LEFT JOIN public.registrar_classes rc ON rc.id = re.class_id
+    WHERE rs.id = {$recordId}
+    GROUP BY rs.id, rs.student_no, rs.first_name, rs.last_name, rs.program, rs.year_level, rs.status
+    LIMIT 1";
+
+    $schemaSql = "SELECT
+        rs.id AS source_record_id,
+        rs.student_no AS student_id,
+        TRIM(CONCAT_WS(' ', rs.first_name, rs.last_name)) AS student_name,
+        rs.program AS course,
+        rs.year_level,
+        COALESCE(MAX(re.status), rs.status, 'Active') AS enrollment_status,
+        COALESCE(STRING_AGG(DISTINCT rc.class_code, ', ' ORDER BY rc.class_code), '') AS subject_load,
+        COUNT(DISTINCT rc.id) AS subject_count,
+        MAX(rs.created_at) AS source_updated_at
+    FROM registrar.students rs
+    LEFT JOIN registrar.enrollments re ON re.student_id = rs.id
+    LEFT JOIN registrar.classes rc ON rc.id = re.class_id
+    WHERE rs.id = {$recordId}
+    GROUP BY rs.id, rs.student_no, rs.first_name, rs.last_name, rs.program, rs.year_level, rs.status
+    LIMIT 1";
+
+    foreach ([$bridgeSql, $schemaSql] as $sql) {
+        $row = guidance_integration_fetch_one_row($conn, $sql);
+        if ($row !== null) {
+            return $row;
+        }
+    }
+
+    return null;
 }
 
 function guidance_find_student_by_student_id($conn, string $studentId): ?array

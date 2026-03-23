@@ -190,14 +190,7 @@ if (isset($_POST['archive_report'])) {
 
 if (isset($_POST['sync_registrar_student'])) {
     $sourceRecordId = trim((string) ($_POST['source_record_id'] ?? ''));
-    $registrarDatasetForSync = guidance_fetch_registrar_directory($conn, 80);
-    $match = null;
-    foreach (($registrarDatasetForSync['rows'] ?? []) as $row) {
-        if ((string) ($row['source_record_id'] ?? '') === $sourceRecordId) {
-            $match = $row;
-            break;
-        }
-    }
+    $match = guidance_fetch_registrar_student_by_source_record_id($conn, $sourceRecordId);
 
     if (!$match) {
         $message = 'Registrar student record was not found.';
@@ -346,6 +339,12 @@ if ($sentReportFilter === 'completed') {
 $prefectInbox = $conn->query("SELECT * FROM integration_flows WHERE direction='INBOUND' AND target_department='guidance' AND source_department='prefect'{$prefectFilterSql} ORDER BY created_at DESC LIMIT 10");
 $inbound = $conn->query("SELECT * FROM integration_flows WHERE direction='INBOUND' AND target_department='guidance' ORDER BY created_at DESC LIMIT 60");
 $outbound = $conn->query("SELECT * FROM integration_flows WHERE direction='OUTBOUND' AND source_department='guidance'" . ($studentIdFilter !== '' ? " AND COALESCE(student_id, '') ILIKE " . guidance_integration_quote('%' . $studentIdFilter . '%') : '') . " ORDER BY created_at DESC LIMIT 60");
+if (!is_object($outbound) || !method_exists($outbound, 'fetch_assoc')) {
+    if ($message === '') {
+        $message = 'Unable to load outbound tracking records right now.';
+        $messageType = 'error';
+    }
+}
 $inboundCount = guidance_count_result($conn, "SELECT COUNT(*) AS total FROM integration_flows WHERE direction='INBOUND' AND target_department='guidance'");
 $outboundCount = guidance_count_result($conn, "SELECT COUNT(*) AS total FROM integration_flows WHERE direction='OUTBOUND' AND source_department='guidance'");
 $prefectUnreadCount = guidance_count_result($conn, "SELECT COUNT(*) AS total FROM integration_flows WHERE direction='INBOUND' AND target_department='guidance' AND source_department='prefect' AND status='Received'");
@@ -641,41 +640,47 @@ guidance_render_shell_start(
                     <th>Archive</th>
                     <th>Action</th>
                 </tr>
-                <?php while ($row = $outbound->fetch_assoc()): ?>
-                    <?php $outboundResponse = guidance_decode_json_payload((string) ($row['response_payload'] ?? '')); ?>
-                    <?php $successReport = (($outboundResponse['success_report'] ?? false) || in_array((string) ($row['status'] ?? ''), ['Sent', 'Acknowledged'], true)); ?>
-                    <?php $archiveStatus = (string) ($outboundResponse['archive_status'] ?? ($successReport ? 'Active' : '-')); ?>
-                    <tr>
-                        <td><?php echo guidance_escape($row['created_at']); ?></td>
-                        <td><?php echo guidance_escape($row['route_key'] ?: '-'); ?></td>
-                        <td><?php echo guidance_escape($row['flow_type']); ?></td>
-                        <td><?php echo guidance_escape(guidance_integration_department_label($row['target_department'])); ?></td>
-                        <td><?php echo guidance_escape($row['student_id'] ?: '-'); ?></td>
-                        <td><?php echo guidance_escape($row['student_name'] ?: '-'); ?></td>
-                        <td><span class="status-pill modern <?php echo strtolower(guidance_escape($row['status'])); ?>"><?php echo guidance_escape($row['status']); ?></span></td>
-                        <td><?php echo $successReport ? 'Yes' : 'No'; ?></td>
-                        <td><?php echo guidance_escape($archiveStatus); ?></td>
-                        <td>
-                            <div class="stack-layout">
-                                <form method="POST" class="form-stack">
-                                    <input type="hidden" name="id" value="<?php echo $row['id']; ?>">
-                                    <button name="mark_sent">Mark Sent</button>
-                                </form>
-                                <form method="POST" class="form-stack">
-                                    <input type="hidden" name="id" value="<?php echo $row['id']; ?>">
-                                    <textarea name="last_error" placeholder="Reason if failed"></textarea>
-                                    <button name="mark_failed" class="btn-danger">Mark Failed</button>
-                                </form>
-                                <?php if ($successReport && $archiveStatus !== 'Archived'): ?>
+                <?php if (is_object($outbound) && method_exists($outbound, 'fetch_assoc')): ?>
+                    <?php while ($row = $outbound->fetch_assoc()): ?>
+                        <?php $outboundResponse = guidance_decode_json_payload((string) ($row['response_payload'] ?? '')); ?>
+                        <?php $successReport = (($outboundResponse['success_report'] ?? false) || in_array((string) ($row['status'] ?? ''), ['Sent', 'Acknowledged'], true)); ?>
+                        <?php $archiveStatus = (string) ($outboundResponse['archive_status'] ?? ($successReport ? 'Active' : '-')); ?>
+                        <tr>
+                            <td><?php echo guidance_escape($row['created_at']); ?></td>
+                            <td><?php echo guidance_escape($row['route_key'] ?: '-'); ?></td>
+                            <td><?php echo guidance_escape($row['flow_type']); ?></td>
+                            <td><?php echo guidance_escape(guidance_integration_department_label($row['target_department'])); ?></td>
+                            <td><?php echo guidance_escape($row['student_id'] ?: '-'); ?></td>
+                            <td><?php echo guidance_escape($row['student_name'] ?: '-'); ?></td>
+                            <td><span class="status-pill modern <?php echo strtolower(guidance_escape($row['status'])); ?>"><?php echo guidance_escape($row['status']); ?></span></td>
+                            <td><?php echo $successReport ? 'Yes' : 'No'; ?></td>
+                            <td><?php echo guidance_escape($archiveStatus); ?></td>
+                            <td>
+                                <div class="stack-layout">
                                     <form method="POST" class="form-stack">
                                         <input type="hidden" name="id" value="<?php echo $row['id']; ?>">
-                                        <button name="archive_report">Archive</button>
+                                        <button name="mark_sent">Mark Sent</button>
                                     </form>
-                                <?php endif; ?>
-                            </div>
-                        </td>
+                                    <form method="POST" class="form-stack">
+                                        <input type="hidden" name="id" value="<?php echo $row['id']; ?>">
+                                        <textarea name="last_error" placeholder="Reason if failed"></textarea>
+                                        <button name="mark_failed" class="btn-danger">Mark Failed</button>
+                                    </form>
+                                    <?php if ($successReport && $archiveStatus !== 'Archived'): ?>
+                                        <form method="POST" class="form-stack">
+                                            <input type="hidden" name="id" value="<?php echo $row['id']; ?>">
+                                            <button name="archive_report">Archive</button>
+                                        </form>
+                                    <?php endif; ?>
+                                </div>
+                            </td>
+                        </tr>
+                    <?php endwhile; ?>
+                <?php else: ?>
+                    <tr>
+                        <td colspan="10">Unable to load outbound tracking records.</td>
                     </tr>
-                <?php endwhile; ?>
+                <?php endif; ?>
             </table>
         </div>
     </section>
