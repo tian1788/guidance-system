@@ -205,31 +205,32 @@ if (isset($_POST['sync_registrar_student'])) {
 }
 
 if (isset($_POST['request_hr_employee'])) {
-    $studentId = trim((string) ($_POST['student_id'] ?? ''));
-    $studentName = trim((string) ($_POST['student_name'] ?? ''));
     $requestedPosition = trim((string) ($_POST['requested_position'] ?? ''));
     $requestReason = trim((string) ($_POST['request_reason'] ?? ''));
     $preferredEmployeeId = trim((string) ($_POST['preferred_employee_id'] ?? ''));
     $preferredEmployeeName = trim((string) ($_POST['preferred_employee_name'] ?? ''));
 
     $summary = trim(implode(' | ', array_filter([
-        $studentId !== '' ? ('Student ID: ' . $studentId) : '',
-        $studentName !== '' ? ('Name: ' . $studentName) : '',
         $requestedPosition !== '' ? ('Requested Role: ' . $requestedPosition) : '',
         $requestReason !== '' ? ('Reason: ' . $requestReason) : '',
+        $preferredEmployeeId !== '' ? ('Preferred Employee ID: ' . $preferredEmployeeId) : '',
+        $preferredEmployeeName !== '' ? ('Preferred Employee Name: ' . $preferredEmployeeName) : '',
     ])));
+
+    if ($requestReason === '') {
+        $message = 'Please provide a request reason before sending to HR.';
+        $messageType = 'error';
+    } else {
 
     $queued = guidance_integration_queue_outbound($conn, 'hr', 'employee_support_request', [
         'reference_table' => 'guidance',
         'reference_id' => null,
-        'student_id' => $studentId !== '' ? $studentId : null,
-        'student_name' => $studentName !== '' ? $studentName : null,
+        'student_id' => null,
+        'student_name' => null,
         'payload_summary' => $summary !== '' ? $summary : 'Employee support request from Guidance.',
         'payload_json' => [
-            'student_id' => $studentId !== '' ? $studentId : null,
-            'student_name' => $studentName !== '' ? $studentName : null,
             'requested_position' => $requestedPosition !== '' ? $requestedPosition : null,
-            'request_reason' => $requestReason !== '' ? $requestReason : null,
+            'request_reason' => $requestReason,
             'preferred_employee_id' => $preferredEmployeeId !== '' ? $preferredEmployeeId : null,
             'preferred_employee_name' => $preferredEmployeeName !== '' ? $preferredEmployeeName : null,
             'source_department' => 'guidance',
@@ -241,6 +242,7 @@ if (isset($_POST['request_hr_employee'])) {
     } else {
         $message = 'Unable to send employee request to HR.';
         $messageType = 'error';
+    }
     }
 }
 
@@ -458,9 +460,27 @@ guidance_render_shell_start(
                         <td><span class="status-pill modern <?php echo strtolower(guidance_escape($row['status'])); ?>"><?php echo guidance_escape($row['status']); ?></span></td>
                         <td><span class="status-pill modern <?php echo strtolower(guidance_escape($sentReportStatus)); ?>"><?php echo guidance_escape($sentReportStatus); ?></span></td>
                         <td><span class="status-pill modern <?php echo strtolower(guidance_escape(str_replace('_', '', $workflowStatus))); ?>"><?php echo guidance_escape(ucwords(str_replace('_', ' ', $workflowStatus))); ?></span></td>
+                        <?php $viewConcern = trim((string) ($prefectPayload['concern'] ?? $prefectPayload['incident'] ?? $prefectPayload['summary'] ?? $row['payload_summary'] ?? '')); ?>
+                        <?php $viewActionTaken = trim((string) ($prefectResponse['action_taken'] ?? $prefectPayload['action_taken'] ?? $prefectPayload['recommended_action'] ?? '')); ?>
+                        <?php $viewNotes = trim((string) ($prefectResponse['review_notes'] ?? $prefectPayload['review_notes'] ?? '')); ?>
+                        <?php if ($viewActionTaken === '') { $viewActionTaken = 'No action taken has been recorded yet.'; } ?>
+                        <?php if ($viewConcern === '') { $viewConcern = 'No concern summary available.'; } ?>
                         <td>
                             <div class="stack-layout">
-                                <a class="table-link" href="integration.php?view=<?php echo (int) $row['id']; ?>#prefect-inbox">View</a>
+                                <button
+                                    type="button"
+                                    class="table-link open-view-modal"
+                                    data-event-id="<?php echo (int) $row['id']; ?>"
+                                    data-student-id="<?php echo guidance_escape($row['student_id'] ?: ''); ?>"
+                                    data-student-name="<?php echo guidance_escape($row['student_name'] ?: ''); ?>"
+                                    data-concern="<?php echo guidance_escape($viewConcern); ?>"
+                                    data-action-taken="<?php echo guidance_escape($viewActionTaken); ?>"
+                                    data-review-notes="<?php echo guidance_escape($viewNotes); ?>"
+                                    data-report-status="<?php echo guidance_escape($row['status'] ?: 'Received'); ?>"
+                                    data-sent-report="<?php echo guidance_escape($sentReportStatus); ?>"
+                                    data-workflow-status="<?php echo guidance_escape(ucwords(str_replace('_', ' ', $workflowStatus))); ?>">
+                                    View
+                                </button>
                                 <?php if (!$isLocked && $row['status'] !== 'Acknowledged'): ?>
                                     <form method="POST" class="form-stack">
                                         <input type="hidden" name="id" value="<?php echo (int) $row['id']; ?>">
@@ -488,6 +508,30 @@ guidance_render_shell_start(
         </table>
     </div>
 </section>
+
+<div id="report-view-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35); z-index:9998; align-items:center; justify-content:center; padding:16px;">
+    <div style="background:#fff; width:min(720px, 100%); border-radius:12px; padding:16px; box-shadow:0 16px 30px rgba(0,0,0,0.2);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <h3 style="margin:0;">Prefect Report Details</h3>
+            <button type="button" id="close-view-modal">Close</button>
+        </div>
+        <p style="margin:0 0 12px 0; color:#5c6470;">View what action has been taken and related report details.</p>
+        <div class="form-stack">
+            <div class="split-layout">
+                <input type="text" id="view-student-id" readonly placeholder="Student ID">
+                <input type="text" id="view-student-name" readonly placeholder="Student Name">
+            </div>
+            <div class="split-layout">
+                <input type="text" id="view-report-status" readonly placeholder="Report status">
+                <input type="text" id="view-workflow-status" readonly placeholder="Workflow status">
+            </div>
+            <input type="text" id="view-sent-report" readonly placeholder="Sent report status">
+            <textarea id="view-concern" rows="3" readonly placeholder="Concern"></textarea>
+            <textarea id="view-action-taken" rows="3" readonly placeholder="Action taken"></textarea>
+            <textarea id="view-review-notes" rows="2" readonly placeholder="Review notes"></textarea>
+        </div>
+    </div>
+</div>
 
 <?php if ($viewEvent): ?>
 <section class="table-panel">
@@ -553,69 +597,39 @@ guidance_render_shell_start(
     </div>
 </section>
 
-<div class="split-layout" id="hr-request">
-    <section class="table-panel">
-        <div class="panel-heading">
-            <div>
-                <h2>HR Employee Directory</h2>
-                <p>Employee information fetched from HR integration source.</p>
-            </div>
+<section class="table-panel" id="hr-request">
+    <div class="panel-heading">
+        <div>
+            <h2>HR Employee Directory</h2>
+            <p>Employee information fetched from HR integration source.</p>
         </div>
-        <div class="table-wrap">
-            <table>
-                <tr>
-                    <th>Employee ID</th>
-                    <th>Name</th>
-                    <th>Department</th>
-                    <th>Position</th>
-                </tr>
-                <?php if (!$hrRows): ?>
-                    <tr><td colspan="4">No HR employee records available.</td></tr>
-                <?php else: ?>
-                    <?php foreach ($hrRows as $employee): ?>
-                        <tr>
-                            <td><?php echo guidance_escape($employee['employee_id'] ?? ''); ?></td>
-                            <td><?php echo guidance_escape($employee['employee_name'] ?? ''); ?></td>
-                            <td><?php echo guidance_escape($employee['department_name'] ?? '-'); ?></td>
-                            <td><?php echo guidance_escape($employee['position_title'] ?? '-'); ?></td>
-                        </tr>
-                    <?php endforeach; ?>
-                <?php endif; ?>
-            </table>
+        <div>
+            <button type="button" class="btn-secondary" id="open-hr-request-modal">Request Employee from HR</button>
         </div>
-    </section>
-
-    <section class="form-box">
-        <div class="panel-heading">
-            <div>
-                <h2>Request Employee from HR</h2>
-                <p>Create an HR request for employee support related to a student case.</p>
-            </div>
-        </div>
-        <form method="POST" class="form-stack">
-            <input name="student_id" placeholder="Student ID" required>
-            <input name="student_name" placeholder="Student Name" required>
-            <input name="requested_position" placeholder="Requested Position / Role" required>
-            <textarea name="request_reason" placeholder="Reason for employee request" required></textarea>
-            <div class="split-layout">
-                <input name="preferred_employee_id" placeholder="Preferred Employee ID (optional)" list="hr-employee-id-list">
-                <input name="preferred_employee_name" placeholder="Preferred Employee Name (optional)" list="hr-employee-name-list">
-            </div>
-            <button name="request_hr_employee">Send Request to HR</button>
-        </form>
-
-        <datalist id="hr-employee-id-list">
-            <?php foreach ($hrRows as $employee): ?>
-                <option value="<?php echo guidance_escape($employee['employee_id'] ?? ''); ?>"></option>
-            <?php endforeach; ?>
-        </datalist>
-        <datalist id="hr-employee-name-list">
-            <?php foreach ($hrRows as $employee): ?>
-                <option value="<?php echo guidance_escape($employee['employee_name'] ?? ''); ?>"></option>
-            <?php endforeach; ?>
-        </datalist>
-    </section>
-</div>
+    </div>
+    <div class="table-wrap">
+        <table>
+            <tr>
+                <th>Employee ID</th>
+                <th>Name</th>
+                <th>Department</th>
+                <th>Position</th>
+            </tr>
+            <?php if (!$hrRows): ?>
+                <tr><td colspan="4">No HR employee records available.</td></tr>
+            <?php else: ?>
+                <?php foreach ($hrRows as $employee): ?>
+                    <tr>
+                        <td><?php echo guidance_escape($employee['employee_id'] ?? ''); ?></td>
+                        <td><?php echo guidance_escape($employee['employee_name'] ?? ''); ?></td>
+                        <td><?php echo guidance_escape($employee['department_name'] ?? '-'); ?></td>
+                        <td><?php echo guidance_escape($employee['position_title'] ?? '-'); ?></td>
+                    </tr>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </table>
+    </div>
+</section>
 
 <div class="split-layout">
     <section class="table-panel">
@@ -717,8 +731,84 @@ guidance_render_shell_start(
     </div>
 </div>
 
+<div id="hr-request-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.35); z-index:9999; align-items:center; justify-content:center; padding:16px;">
+    <div style="background:#fff; width:min(680px, 100%); border-radius:12px; padding:16px; box-shadow:0 16px 30px rgba(0,0,0,0.2);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <h3 style="margin:0;">Request Employee from HR</h3>
+            <button type="button" id="close-hr-request-modal">Close</button>
+        </div>
+        <p style="margin:0 0 12px 0; color:#5c6470;">Submit an employee request with the reason and optional preferred employee details.</p>
+        <form method="POST" class="form-stack">
+            <input name="requested_position" placeholder="Requested Position / Role (optional)">
+            <textarea name="request_reason" placeholder="Reason for employee request" required></textarea>
+            <div class="split-layout">
+                <input name="preferred_employee_id" placeholder="Preferred Employee ID (optional)" list="hr-employee-id-list">
+                <input name="preferred_employee_name" placeholder="Preferred Employee Name (optional)" list="hr-employee-name-list">
+            </div>
+            <button name="request_hr_employee">Send Request to HR</button>
+        </form>
+    </div>
+</div>
+
+<datalist id="hr-employee-id-list">
+    <?php foreach ($hrRows as $employee): ?>
+        <option value="<?php echo guidance_escape($employee['employee_id'] ?? ''); ?>"></option>
+    <?php endforeach; ?>
+</datalist>
+<datalist id="hr-employee-name-list">
+    <?php foreach ($hrRows as $employee): ?>
+        <option value="<?php echo guidance_escape($employee['employee_name'] ?? ''); ?>"></option>
+    <?php endforeach; ?>
+</datalist>
+
 <script>
 (() => {
+    const topHrRequestButton = document.querySelector('a[href="#hr-request"]');
+    const openHrRequestModalButton = document.getElementById('open-hr-request-modal');
+    const hrRequestModal = document.getElementById('hr-request-modal');
+    const closeHrRequestModalButton = document.getElementById('close-hr-request-modal');
+
+    const openHrRequestModal = () => {
+        if (hrRequestModal) hrRequestModal.style.display = 'flex';
+    };
+
+    if (topHrRequestButton) {
+        topHrRequestButton.addEventListener('click', (event) => {
+            event.preventDefault();
+            openHrRequestModal();
+        });
+    }
+
+    if (openHrRequestModalButton) {
+        openHrRequestModalButton.addEventListener('click', () => {
+            openHrRequestModal();
+        });
+    }
+
+    if (closeHrRequestModalButton && hrRequestModal) {
+        closeHrRequestModalButton.addEventListener('click', () => {
+            hrRequestModal.style.display = 'none';
+        });
+
+        hrRequestModal.addEventListener('click', (event) => {
+            if (event.target === hrRequestModal) {
+                hrRequestModal.style.display = 'none';
+            }
+        });
+    }
+
+    const viewModal = document.getElementById('report-view-modal');
+    const closeViewBtn = document.getElementById('close-view-modal');
+    const viewButtons = document.querySelectorAll('.open-view-modal');
+    const viewStudentId = document.getElementById('view-student-id');
+    const viewStudentName = document.getElementById('view-student-name');
+    const viewConcern = document.getElementById('view-concern');
+    const viewActionTaken = document.getElementById('view-action-taken');
+    const viewReviewNotes = document.getElementById('view-review-notes');
+    const viewReportStatus = document.getElementById('view-report-status');
+    const viewSentReport = document.getElementById('view-sent-report');
+    const viewWorkflowStatus = document.getElementById('view-workflow-status');
+
     const modal = document.getElementById('review-send-modal');
     const closeBtn = document.getElementById('close-review-modal');
     const eventInput = document.getElementById('modal-event-id');
@@ -727,6 +817,32 @@ guidance_render_shell_start(
     const summaryInput = document.getElementById('modal-summary');
     const reviewStatusInput = document.getElementById('modal-review-status');
     const openButtons = document.querySelectorAll('.open-review-modal');
+
+    if (viewModal && closeViewBtn && viewStudentId && viewStudentName && viewConcern && viewActionTaken && viewReviewNotes && viewReportStatus && viewSentReport && viewWorkflowStatus) {
+        viewButtons.forEach((button) => {
+            button.addEventListener('click', () => {
+                viewStudentId.value = button.getAttribute('data-student-id') || '';
+                viewStudentName.value = button.getAttribute('data-student-name') || '';
+                viewConcern.value = button.getAttribute('data-concern') || '';
+                viewActionTaken.value = button.getAttribute('data-action-taken') || '';
+                viewReviewNotes.value = button.getAttribute('data-review-notes') || 'No review notes yet.';
+                viewReportStatus.value = button.getAttribute('data-report-status') || '';
+                viewSentReport.value = button.getAttribute('data-sent-report') || '';
+                viewWorkflowStatus.value = button.getAttribute('data-workflow-status') || '';
+                viewModal.style.display = 'flex';
+            });
+        });
+
+        closeViewBtn.addEventListener('click', () => {
+            viewModal.style.display = 'none';
+        });
+
+        viewModal.addEventListener('click', (event) => {
+            if (event.target === viewModal) {
+                viewModal.style.display = 'none';
+            }
+        });
+    }
 
     if (!modal || !closeBtn || !eventInput || !studentIdInput || !studentNameInput || !summaryInput || !reviewStatusInput) return;
 
