@@ -47,6 +47,19 @@ function guidance_integration_departments(): array
                 'incident_dashboard_feedback' => 'Incident Dashboard Feedback',
             ],
         ],
+        'hr' => [
+            'label' => 'HR',
+            'direction' => 'bidirectional',
+            'description' => 'Employee directory and workforce support desk for office staffing requests.',
+            'outbound_flows' => [
+                'employee_support_request' => 'Employee Support Request',
+                'employee_clearance_followup' => 'Employee Clearance Follow-up',
+            ],
+            'inbound_flows' => [
+                'employee_assignment_update' => 'Employee Assignment Update',
+                'employee_directory_sync' => 'Employee Directory Sync',
+            ],
+        ],
     ];
 }
 
@@ -137,6 +150,50 @@ function guidance_integration_normalize_department(string $value): string
     return strtolower(trim($value));
 }
 
+function guidance_integration_normalize_event_code(string $eventCode): string
+{
+    $normalized = strtolower(trim($eventCode));
+    $aliases = [
+        'counseling_reports' => 'counseling_report',
+        'discipline_reports' => 'discipline_report',
+    ];
+
+    return $aliases[$normalized] ?? $normalized;
+}
+
+function guidance_integration_route_exists($conn, string $sourceDepartment, string $targetDepartment, string $eventCode): bool
+{
+    $sourceDepartment = guidance_integration_normalize_department($sourceDepartment);
+    $targetDepartment = guidance_integration_normalize_department($targetDepartment);
+    $eventCode = guidance_integration_normalize_event_code($eventCode);
+
+    $sqls = [
+        "SELECT 1
+         FROM guidance.integration_routes
+         WHERE source_department_key = " . guidance_integration_quote($sourceDepartment) . "
+           AND target_department_key = " . guidance_integration_quote($targetDepartment) . "
+           AND event_code = " . guidance_integration_quote($eventCode) . "
+           AND is_active = TRUE
+         LIMIT 1",
+        "SELECT 1
+         FROM integration_routes
+         WHERE source_department_key = " . guidance_integration_quote($sourceDepartment) . "
+           AND target_department_key = " . guidance_integration_quote($targetDepartment) . "
+           AND event_code = " . guidance_integration_quote($eventCode) . "
+           AND is_active = TRUE
+         LIMIT 1",
+    ];
+
+    foreach ($sqls as $sql) {
+        $result = @$conn->query($sql);
+        if (is_object($result) && method_exists($result, 'fetch_assoc')) {
+            return (bool) $result->fetch_assoc();
+        }
+    }
+
+    return false;
+}
+
 function guidance_integration_department_label(string $key): string
 {
     $departments = guidance_integration_departments();
@@ -169,6 +226,21 @@ function guidance_integration_resolve_flow_type(string $sourceDepartment, string
 
 function guidance_integration_ensure_schema($conn): void
 {
+    static $alreadyChecked = false;
+    if ($alreadyChecked) {
+        return;
+    }
+
+    $alreadyChecked = true;
+    $cacheTtlSeconds = 900;
+    $sessionReady = function_exists('session_status') && session_status() === PHP_SESSION_ACTIVE;
+    if ($sessionReady) {
+        $lastCheckedAt = (int) ($_SESSION['guidance_schema_checked_at'] ?? 0);
+        if ($lastCheckedAt > 0 && (time() - $lastCheckedAt) < $cacheTtlSeconds) {
+            return;
+        }
+    }
+
     $queries = [
         "ALTER TABLE students ADD COLUMN IF NOT EXISTS section_name VARCHAR(100) NULL",
         "ALTER TABLE students ADD COLUMN IF NOT EXISTS enrollment_status VARCHAR(50) NULL DEFAULT 'Active'",
@@ -230,6 +302,10 @@ function guidance_integration_ensure_schema($conn): void
     foreach ($queries as $query) {
         $conn->query($query);
     }
+
+    if ($sessionReady) {
+        $_SESSION['guidance_schema_checked_at'] = time();
+    }
 }
 
 function guidance_integration_fetch_rows($conn, string $sql): ?array
@@ -237,7 +313,7 @@ function guidance_integration_fetch_rows($conn, string $sql): ?array
     $rows = [];
     $result = $conn->query($sql);
 
-    if (!$result || !method_exists($result, 'fetch_assoc')) {
+    if (!is_object($result) || !method_exists($result, 'fetch_assoc')) {
         return null;
     }
 
@@ -402,6 +478,38 @@ function guidance_fetch_pmed_monitoring_sessions($conn, int $limit = 20): array
     ]);
 }
 
+function guidance_fetch_hr_employees($conn, int $limit = 100): array
+{
+    $limit = max(1, min(500, $limit));
+
+    $bridgeSql = "SELECT
+        e.id AS source_record_id,
+        COALESCE(NULLIF(e.employee_number, ''), NULLIF(e.employee_no, ''), NULLIF(e.emp_no, ''), CAST(e.id AS text)) AS employee_id,
+        NULLIF(TRIM(CONCAT_WS(' ', e.first_name, e.middle_name, e.last_name)), '') AS employee_name,
+        COALESCE(NULLIF(e.department, ''), NULLIF(e.office, ''), 'HR') AS department_name,
+        COALESCE(NULLIF(e.position, ''), NULLIF(e.job_title, ''), 'Staff') AS position_title,
+        COALESCE(e.updated_at, e.created_at) AS source_updated_at
+    FROM public.hr_employees e
+    ORDER BY employee_name ASC NULLS LAST
+    LIMIT {$limit}";
+
+    $schemaSql = "SELECT
+        e.id AS source_record_id,
+        COALESCE(NULLIF(e.employee_number, ''), NULLIF(e.employee_no, ''), NULLIF(e.emp_no, ''), CAST(e.id AS text)) AS employee_id,
+        NULLIF(TRIM(CONCAT_WS(' ', e.first_name, e.middle_name, e.last_name)), '') AS employee_name,
+        COALESCE(NULLIF(e.department, ''), NULLIF(e.office, ''), 'HR') AS department_name,
+        COALESCE(NULLIF(e.position, ''), NULLIF(e.job_title, ''), 'Staff') AS position_title,
+        COALESCE(e.updated_at, e.created_at) AS source_updated_at
+    FROM hr.employees e
+    ORDER BY employee_name ASC NULLS LAST
+    LIMIT {$limit}";
+
+    return guidance_integration_fetch_dataset($conn, [
+        ['label' => 'public.hr_employees bridge view', 'sql' => $bridgeSql],
+        ['label' => 'hr schema employee table', 'sql' => $schemaSql],
+    ]);
+}
+
 function guidance_integration_dispatch_flow(
     $conn,
     string $sourceDepartment,
@@ -411,6 +519,12 @@ function guidance_integration_dispatch_flow(
 ): bool {
     $sourceDepartment = guidance_integration_normalize_department($sourceDepartment);
     $targetDepartment = guidance_integration_normalize_department($targetDepartment);
+    $eventCode = guidance_integration_normalize_event_code($eventCode);
+
+    if (!guidance_integration_route_exists($conn, $sourceDepartment, $targetDepartment, $eventCode)) {
+        return false;
+    }
+
     $flowType = $options['flow_type'] ?? guidance_integration_resolve_flow_type($sourceDepartment, $targetDepartment, $eventCode);
     $routeKey = $options['route_key'] ?? ($sourceDepartment . '_to_' . $targetDepartment . '_' . $eventCode);
     $correlationId = $options['correlation_id'] ?? uniqid($sourceDepartment . '_', true);
@@ -426,7 +540,7 @@ function guidance_integration_dispatch_flow(
         "SELECT * FROM integration_flows WHERE correlation_id = " . guidance_integration_quote($correlationId) . " ORDER BY id DESC LIMIT 1"
     );
 
-    if ($duplicateCheck && method_exists($duplicateCheck, 'fetch_assoc') && $duplicateCheck->fetch_assoc()) {
+    if (is_object($duplicateCheck) && method_exists($duplicateCheck, 'fetch_assoc') && $duplicateCheck->fetch_assoc()) {
         return true;
     }
 
@@ -444,8 +558,8 @@ function guidance_integration_dispatch_flow(
         " . guidance_integration_quote($studentId) . ",
         " . guidance_integration_quote($studentName) . ",
         " . guidance_integration_quote($payloadSummary) . ",
-        'Sent',
-        NOW(),
+        'Queued',
+        NULL,
         " . guidance_integration_quote($routeKey) . ",
         " . guidance_integration_quote($eventCode) . ",
         " . guidance_integration_quote($correlationId) . ",
@@ -454,6 +568,18 @@ function guidance_integration_dispatch_flow(
         {$payloadJsonSql}::jsonb,
         NOW()
     )";
+
+    $outboundInserted = (bool) $conn->query($outboundSql);
+    if (!$outboundInserted) {
+        return false;
+    }
+
+    if ($targetDepartment !== 'guidance') {
+        if ($sourceDepartment === 'guidance' && $targetDepartment === 'pmed') {
+            guidance_log_department_report_for_pmed($conn, $eventCode, $flowType, $correlationId, $payloadSummary, $payloadJson);
+        }
+        return true;
+    }
 
     $inboundSql = "INSERT INTO integration_flows (
         direction, source_department, target_department, flow_type, reference_table, reference_id,
@@ -480,7 +606,7 @@ function guidance_integration_dispatch_flow(
         NOW()
     )";
 
-    return (bool) $conn->query($outboundSql) && (bool) $conn->query($inboundSql);
+    return (bool) $conn->query($inboundSql);
 }
 
 function guidance_receive_shared_department_event(
@@ -523,18 +649,98 @@ function guidance_integration_queue_outbound(
     return guidance_integration_dispatch_flow($conn, $sourceDepartment, $targetDepartment, $eventCode, $options);
 }
 
+function guidance_log_department_report_for_pmed(
+    $conn,
+    string $eventCode,
+    string $flowType,
+    string $correlationId,
+    ?string $payloadSummary,
+    array $payloadJson
+): void {
+    $reportReference = trim((string) ($payloadJson['case_reference'] ?? $payloadJson['report_reference'] ?? $correlationId));
+    if ($reportReference === '') {
+        $reportReference = 'RPT-GUIDANCE-' . date('YmdHis');
+    }
+
+    $reportName = trim((string) ($payloadJson['report_name'] ?? $payloadJson['title'] ?? $flowType));
+    if ($reportName === '') {
+        $reportName = 'Guidance Department Report';
+    }
+
+    $reportTypeMap = [
+        'counseling_report' => 'Guidance Report',
+        'incident_monitoring_update' => 'Guidance Report',
+        'wellness_summary' => 'Guidance Report',
+    ];
+    $reportType = $reportTypeMap[guidance_integration_normalize_event_code($eventCode)] ?? 'Guidance Report';
+    $detail = trim((string) ($payloadSummary ?? $payloadJson['summary'] ?? $payloadJson['issue'] ?? $payloadJson['concern'] ?? 'Guidance report submitted to PMED.'));
+
+    $metadataJson = json_encode([
+        'stage' => 'reporting',
+        'target_key' => 'pmed',
+        'target_department' => 'pmed',
+        'source_department' => 'guidance',
+        'source_department_name' => 'Guidance',
+        'report_name' => $reportName,
+        'report_type' => $reportType,
+        'report_reference' => $reportReference,
+        'owner_name' => 'Guidance Coordinator',
+        'delivery_status' => 'Received',
+        'event_code' => guidance_integration_normalize_event_code($eventCode),
+        'payload' => $payloadJson,
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    $metadataSql = guidance_integration_quote($metadataJson !== false ? $metadataJson : '{}');
+
+    $sqlPublic = "INSERT INTO public.module_activity_logs (
+        module, action, detail, actor, entity_type, entity_key, metadata
+    ) VALUES (
+        'department_reports',
+        'Report Sent to PMED',
+        " . guidance_integration_quote($detail) . ",
+        'Guidance Coordinator',
+        'department_report',
+        " . guidance_integration_quote($reportReference) . ",
+        {$metadataSql}::jsonb
+    )";
+
+    $sqlFallback = "INSERT INTO module_activity_logs (
+        module, action, detail, actor, entity_type, entity_key, metadata
+    ) VALUES (
+        'department_reports',
+        'Report Sent to PMED',
+        " . guidance_integration_quote($detail) . ",
+        'Guidance Coordinator',
+        'department_report',
+        " . guidance_integration_quote($reportReference) . ",
+        {$metadataSql}::jsonb
+    )";
+
+    $result = @$conn->query($sqlPublic);
+    if (!$result) {
+        @$conn->query($sqlFallback);
+    }
+}
+
 function guidance_fetch_students($conn): array
 {
     $rows = [];
     $result = $conn->query("SELECT * FROM students ORDER BY name ASC, student_id ASC");
 
-    if ($result && method_exists($result, 'fetch_assoc')) {
+    if (is_object($result) && method_exists($result, 'fetch_assoc')) {
         while ($row = $result->fetch_assoc()) {
             $rows[] = $row;
         }
     }
 
     return $rows;
+}
+
+
+function guidance_fetch_registrar_student_by_id($conn, string $studentId): ?array
+{
+    // For now, we will use the local lookup.
+    // In a real scenario, this would involve an API call to the Registrar system.
+    return guidance_find_student_by_student_id($conn, $studentId);
 }
 
 function guidance_find_student_by_student_id($conn, string $studentId): ?array
@@ -548,13 +754,14 @@ function guidance_find_student_by_student_id($conn, string $studentId): ?array
         "SELECT * FROM students WHERE student_id = " . guidance_integration_quote($studentId) . " ORDER BY id DESC LIMIT 1"
     );
 
-    if ($result && method_exists($result, 'fetch_assoc')) {
+    if (is_object($result) && method_exists($result, 'fetch_assoc')) {
         $row = $result->fetch_assoc();
         return $row ?: null;
     }
 
     return null;
 }
+
 
 function guidance_receive_student_profile_from_registrar(
     $conn,
@@ -663,6 +870,39 @@ function guidance_receive_student_profile_from_registrar(
     return (bool) $conn->query($flowSql);
 }
 
+function guidance_request_employee_to_hr(
+    $conn,
+    string $employeeId,
+    string $requestType,
+    string $requestDetails,
+    array $options = []
+): bool {
+    $correlationId = $options['correlation_id'] ?? uniqid('guidance_hr_req_', true);
+    $payload = [
+        'employee_id' => $employeeId,
+        'request_type' => $requestType,
+        'request_details' => $requestDetails,
+        'request_initiator' => 'Guidance',
+        'correlation_id' => $correlationId,
+    ];
+
+    $payloadSummary = "HR Request: {$requestType} for Employee ID: {$employeeId}";
+
+    return guidance_integration_queue_outbound(
+        $conn,
+        'hr',
+        'employee_support_request',
+        [
+            'source_department' => 'guidance',
+            'flow_type' => 'Employee Support Request',
+            'correlation_id' => $correlationId,
+            'student_id' => $employeeId, // Using student_id field to store employee_id for consistency
+            'payload_summary' => $payloadSummary,
+            'payload_json' => $payload,
+        ]
+    );
+}
+
 function guidance_get_flow_event($conn, ?int $eventId = null, ?string $correlationId = null): ?array
 {
     if ($eventId === null && ($correlationId === null || trim($correlationId) === '')) {
@@ -675,7 +915,7 @@ function guidance_get_flow_event($conn, ?int $eventId = null, ?string $correlati
 
     $result = $conn->query("SELECT * FROM integration_flows WHERE {$where} ORDER BY id DESC LIMIT 1");
 
-    if ($result && method_exists($result, 'fetch_assoc')) {
+    if (is_object($result) && method_exists($result, 'fetch_assoc')) {
         $row = $result->fetch_assoc();
         return $row ?: null;
     }
@@ -702,7 +942,7 @@ function guidance_create_guidance_record_from_payload($conn, string $category, a
         $existing = $conn->query(
             "SELECT * FROM guidance WHERE case_reference = " . guidance_integration_quote($caseReference) . " ORDER BY id DESC LIMIT 1"
         );
-        if ($existing && method_exists($existing, 'fetch_assoc') && $existing->fetch_assoc()) {
+        if (is_object($existing) && method_exists($existing, 'fetch_assoc') && $existing->fetch_assoc()) {
             return true;
         }
     }
@@ -741,19 +981,20 @@ function guidance_apply_inbound_event($conn, int $eventId): bool
 
     $sourceDepartment = guidance_integration_normalize_department((string) ($event['source_department'] ?? ''));
     $eventCode = trim((string) ($event['event_code'] ?? ''));
+    $normalizedEventCode = guidance_integration_normalize_event_code($eventCode);
     $applied = true;
 
-    if ($sourceDepartment === 'registrar' && $eventCode === 'student_profile_sync') {
+    if ($sourceDepartment === 'registrar' && $normalizedEventCode === 'student_profile_sync') {
         $applied = guidance_receive_student_profile_from_registrar($conn, $payload, [
             'correlation_id' => (string) ($event['correlation_id'] ?? ''),
             'route_key' => (string) ($event['route_key'] ?? 'registrar_to_guidance_student_profile_sync'),
-            'event_code' => $eventCode,
+            'event_code' => $normalizedEventCode,
             'flow_type' => 'Student Profile Sync',
             'record_flow' => false,
         ]);
-    } elseif ($sourceDepartment === 'prefect' && $eventCode === 'offense_report') {
+    } elseif ($sourceDepartment === 'prefect' && in_array($normalizedEventCode, ['offense_report', 'discipline_report'], true)) {
         $applied = guidance_create_guidance_record_from_payload($conn, 'behavior', $payload);
-    } elseif ($sourceDepartment === 'pmed' && $eventCode === 'monitoring_summary') {
+    } elseif ($sourceDepartment === 'pmed' && $normalizedEventCode === 'monitoring_summary') {
         $applied = guidance_create_guidance_record_from_payload($conn, 'wellness', $payload);
     }
 
@@ -762,7 +1003,7 @@ function guidance_apply_inbound_event($conn, int $eventId): bool
         $responsePayload = guidance_integration_quote(json_encode([
             'applied_by' => 'guidance',
             'applied_at' => date(DATE_ATOM),
-            'event_code' => $eventCode,
+            'event_code' => $normalizedEventCode !== '' ? $normalizedEventCode : $eventCode,
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
 
         $conn->query("UPDATE integration_flows SET

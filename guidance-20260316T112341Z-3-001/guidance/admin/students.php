@@ -1,9 +1,39 @@
 <?php
+session_start();
 include "../config/db.php";
 include "_shared.php";
 include "integration_helpers.php";
 
 guidance_integration_ensure_schema($conn);
+
+if (isset($_GET['lookup_student_id'])) {
+    header('Content-Type: application/json; charset=utf-8');
+    $lookupStudentId = trim((string) ($_GET['lookup_student_id'] ?? ''));
+    if ($lookupStudentId === '') {
+        echo json_encode(['ok' => false, 'message' => 'Student ID is required.']);
+        exit;
+    }
+
+    $student = guidance_find_student_by_student_id($conn, $lookupStudentId);
+    if (!$student) {
+        echo json_encode(['ok' => false, 'message' => 'Student not found in Registrar.']);
+        exit;
+    }
+
+    echo json_encode([
+        'ok' => true,
+        'data' => [
+            'student_id' => (string) ($student['student_id'] ?? ''),
+            'name' => (string) ($student['student_name'] ?? ''),
+            'course' => (string) ($student['course'] ?? ''),
+            'year_level' => (string) ($student['year_level'] ?? ''),
+            'section_name' => (string) ($student['section_name'] ?? ''),
+            'enrollment_status' => (string) ($student['enrollment_status'] ?? 'Enrolled'),
+            'subject_load' => (string) ($student['subject_load'] ?? ''),
+        ],
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+}
 
 $message = '';
 $messageType = 'success';
@@ -27,20 +57,26 @@ if (isset($_POST['sync_from_registrar'])) {
     }
 }
 
+
 if (isset($_GET['delete'])) {
     $id = (int) $_GET['delete'];
     $conn->query("DELETE FROM students WHERE id=$id");
     $message = 'Student profile removed from the Guidance registry.';
 }
 
-$result = $conn->query("SELECT * FROM students ORDER BY name ASC, student_id ASC");
-$studentTotal = $result ? $result->num_rows : 0;
-$courseTotalResult = $conn->query("SELECT DISTINCT course FROM students WHERE course IS NOT NULL");
-$courseTotal = $courseTotalResult ? $courseTotalResult->num_rows : 0;
-$yearTotalResult = $conn->query("SELECT DISTINCT year_level FROM students WHERE year_level IS NOT NULL");
-$yearTotal = $yearTotalResult ? $yearTotalResult->num_rows : 0;
-$registrarSyncedResult = $conn->query("SELECT * FROM students WHERE registrar_status='Synced'");
-$registrarSynced = $registrarSyncedResult ? $registrarSyncedResult->num_rows : 0;
+$result = $conn->query("SELECT * FROM students ORDER BY name ASC, student_id ASC LIMIT 80");
+$studentTotalResult = $conn->query("SELECT COUNT(*) AS total FROM students");
+$studentTotalRow = (is_object($studentTotalResult) && method_exists($studentTotalResult, 'fetch_assoc')) ? $studentTotalResult->fetch_assoc() : ['total' => 0];
+$studentTotal = (int) ($studentTotalRow['total'] ?? 0);
+$courseTotalResult = $conn->query("SELECT COUNT(DISTINCT course) AS total FROM students WHERE COALESCE(course, '') <> ''");
+$courseTotalRow = (is_object($courseTotalResult) && method_exists($courseTotalResult, 'fetch_assoc')) ? $courseTotalResult->fetch_assoc() : ['total' => 0];
+$courseTotal = (int) ($courseTotalRow['total'] ?? 0);
+$yearTotalResult = $conn->query("SELECT COUNT(DISTINCT year_level) AS total FROM students WHERE COALESCE(year_level, '') <> ''");
+$yearTotalRow = (is_object($yearTotalResult) && method_exists($yearTotalResult, 'fetch_assoc')) ? $yearTotalResult->fetch_assoc() : ['total' => 0];
+$yearTotal = (int) ($yearTotalRow['total'] ?? 0);
+$registrarSyncedResult = $conn->query("SELECT COUNT(*) AS total FROM students WHERE registrar_status='Synced'");
+$registrarSyncedRow = (is_object($registrarSyncedResult) && method_exists($registrarSyncedResult, 'fetch_assoc')) ? $registrarSyncedResult->fetch_assoc() : ['total' => 0];
+$registrarSynced = (int) ($registrarSyncedRow['total'] ?? 0);
 
 guidance_render_shell_start(
     'Student Info',
@@ -55,44 +91,48 @@ guidance_render_shell_start(
     [
         ['label' => 'Fetch Shared Data', 'href' => 'connected_data.php', 'class' => 'btn-primary'],
         ['label' => 'Quick Manual Intake', 'href' => '#student-form', 'class' => 'btn-secondary'],
+        ['label' => 'Request to HR', 'href' => '#hr-request-form', 'class' => 'btn-secondary'],
         ['label' => 'Open Integration Hub', 'href' => 'integration.php', 'class' => 'btn-secondary'],
     ],
     ['Registrar Sends Student Identity', 'Guidance Creates Cases', 'Registrar / Prefect / PMED Coordination', 'Status Tracking']
 );
 ?>
 
-<?php if ($message !== ''): ?>
+<?php if (isset($_POST['sync_from_registrar']) && $message !== ''): ?>
     <div class="flash-message <?php echo $messageType === 'error' ? 'flash-error' : ''; ?>"><?php echo guidance_escape($message); ?></div>
 <?php endif; ?>
+
 
 <div class="split-layout">
     <section class="form-box" id="student-form">
         <div class="panel-heading">
             <div>
                 <h2>Quick Manual Registrar Intake</h2>
-                <p>Use this form only when a live shared Registrar record is not available yet. The preferred path is the Connected Data page, which reads directly from shared Supabase data.</p>
+                <p>Use this form only when a live shared Registrar record is not available yet. For best performance, this page loads the local Guidance registry first; use the sync button only when you need fresh Registrar data.</p>
             </div>
         </div>
         <form method="POST" class="form-stack">
-            <input name="student_id" placeholder="Student ID" required>
-            <input name="name" placeholder="Student Name" required>
+            <button type="submit" name="sync_live_registrar" formnovalidate>Sync Latest Registrar Students</button>
+            <input name="student_id" id="student-id-input" placeholder="Student ID" required value="<?php echo guidance_escape($_GET['lookup_student_id'] ?? ''); ?>">
+            <input name="name" id="student-name-input" placeholder="Student Name" required>
             <div class="form-grid">
-                <input name="course" placeholder="Course" required>
-                <input name="year_level" placeholder="Year Level" required>
+                <input name="course" id="course-input" placeholder="Course" required>
+                <input name="year_level" id="year-level-input" placeholder="Year Level" required>
             </div>
             <div class="form-grid">
-                <input name="section_name" placeholder="Section" required>
-                <select name="enrollment_status" required>
+                <input name="section_name" id="section-input" placeholder="Section" required>
+                <select name="enrollment_status" id="enrollment-status-input" required>
                     <option value="Enrolled">Enrolled</option>
                     <option value="Advised">Advised</option>
                     <option value="Cleared">Cleared</option>
                     <option value="On Hold">On Hold</option>
                 </select>
             </div>
-            <textarea name="subject_load" placeholder="Subject Load, separated by commas"></textarea>
+            <textarea name="subject_load" id="subject-load-input" placeholder="Subject Load, separated by commas"></textarea>
             <button name="sync_from_registrar">Receive From Registrar</button>
         </form>
     </section>
+
 
     <aside class="insight-panel soft">
         <div class="panel-heading">
@@ -157,5 +197,61 @@ guidance_render_shell_start(
         </table>
     </div>
 </section>
+
+<script>
+(() => {
+    const studentIdInput = document.getElementById('student-id-input');
+    const studentNameInput = document.getElementById('student-name-input');
+    const courseInput = document.getElementById('course-input');
+    const yearLevelInput = document.getElementById('year-level-input');
+    const sectionInput = document.getElementById('section-input');
+    const enrollmentStatusInput = document.getElementById('enrollment-status-input');
+    const subjectLoadInput = document.getElementById('subject-load-input');
+    if (!studentIdInput || !studentNameInput || !courseInput || !yearLevelInput || !sectionInput || !enrollmentStatusInput || !subjectLoadInput) return;
+
+    let lookupTimer = null;
+    let lastLookup = '';
+
+    const applyData = (data) => {
+        if (!data || typeof data !== 'object') return;
+        studentNameInput.value = String(data.name || '');
+        courseInput.value = String(data.course || '');
+        yearLevelInput.value = String(data.year_level || '');
+        sectionInput.value = String(data.section_name || '');
+        subjectLoadInput.value = String(data.subject_load || '');
+        const status = String(data.enrollment_status || '');
+        if (status) enrollmentStatusInput.value = status;
+    };
+
+    const lookupStudent = async () => {
+        const value = String(studentIdInput.value || '').trim();
+        if (!value || value.length < 3 || value === lastLookup) return;
+        lastLookup = value;
+        try {
+            const response = await fetch(`students.php?lookup_student_id=${encodeURIComponent(value)}`, {
+                method: 'GET',
+                headers: { 'Accept': 'application/json' },
+                cache: 'no-store',
+            });
+            if (!response.ok) return;
+            const payload = await response.json();
+            if (payload && payload.ok && payload.data) {
+                applyData(payload.data);
+            }
+        } catch (_) {
+            // Keep form usable even when lookup fails.
+        }
+    };
+
+    const queueLookup = () => {
+        if (lookupTimer) window.clearTimeout(lookupTimer);
+        lookupTimer = window.setTimeout(lookupStudent, 250);
+    };
+
+    studentIdInput.addEventListener('input', queueLookup);
+    studentIdInput.addEventListener('change', lookupStudent);
+    studentIdInput.addEventListener('blur', lookupStudent);
+})();
+</script>
 
 <?php guidance_render_shell_end(); ?>

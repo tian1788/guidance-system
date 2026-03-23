@@ -5,7 +5,7 @@ include "integration_helpers.php";
 
 guidance_integration_ensure_schema($conn);
 
-function guidance_count($conn, string $sql): int
+function guidance_count(/** @var mysqli $conn */ $conn, string $sql): int
 {
     if (!is_object($conn) || !method_exists($conn, 'query')) {
         return 0;
@@ -15,7 +15,7 @@ function guidance_count($conn, string $sql): int
     return is_object($result) && isset($result->num_rows) ? (int) $result->num_rows : 0;
 }
 
-function guidance_rows($conn, string $sql): array
+function guidance_rows(/** @var mysqli $conn */ $conn, string $sql): array
 {
     $rows = [];
     if (!is_object($conn) || !method_exists($conn, 'query')) {
@@ -58,6 +58,28 @@ $reviewedSurvey = guidance_count($conn, "SELECT * FROM survey WHERE status='Revi
 
 $totalCrisis = guidance_count($conn, "SELECT * FROM crisis");
 $newCrisis = guidance_count($conn, "SELECT * FROM crisis WHERE date_reported >= CURDATE() - INTERVAL 7 DAY");
+
+$message = '';
+$messageType = 'success';
+
+if (isset($_POST['send_hr_request'])) {
+    $employeeId = trim((string) ($_POST['employee_id'] ?? ''));
+    $requestType = trim((string) ($_POST['request_type'] ?? ''));
+    $requestDetails = trim((string) ($_POST['request_details'] ?? ''));
+
+    if ($employeeId === '' || $requestType === '' || $requestDetails === '') {
+        $message = 'Please fill in all required fields for the HR request.';
+        $messageType = 'error';
+    } else {
+        $requested = guidance_request_employee_to_hr($conn, $employeeId, $requestType, $requestDetails);
+        if ($requested) {
+            $message = 'Employee information request sent to HR successfully.';
+        } else {
+            $message = 'Failed to send employee information request to HR. Please check the integration setup.';
+            $messageType = 'error';
+        }
+    }
+}
 
 $outboundQueued = guidance_count($conn, "SELECT * FROM integration_flows WHERE direction='OUTBOUND' AND source_department='guidance' AND status='Queued'");
 $inboundReceived = guidance_count($conn, "SELECT * FROM integration_flows WHERE direction='INBOUND' AND target_department='guidance' AND status='Received'");
@@ -269,6 +291,56 @@ $brandLogo = '../../../../Registrar/assets/img/logo.png';
                 </div>
             </div>
         </aside>
+    </section>
+
+    <?php if (isset($_POST['send_hr_request']) && $message !== ''): ?>
+        <div class="flash-message <?php echo $messageType === 'error' ? 'flash-error' : ''; ?>"><?php echo guidance_escape($message); ?></div>
+    <?php endif; ?>
+
+    <section class="form-box" id="hr-request-form">
+        <div class="panel-heading">
+            <div>
+                <h2>Request Employee Information from HR</h2>
+                <p>Use this form to send requests to the HR department for employee-related information.</p>
+            </div>
+        </div>
+        <form method="POST" class="form-stack">
+            <input name="employee_id" id="employee-id-input" placeholder="Employee ID" required>
+            <select name="request_type" id="request-type-input" required>
+                <option value="">Select Request Type</option>
+                <option value="Verification">Verification</option>
+                <option value="Leave Balance">Leave Balance</option>
+                <option value="Salary Information">Salary Information</option>
+                <option value="Other">Other</option>
+            </select>
+            <textarea name="request_details" id="request-details-input" placeholder="Details of your request"></textarea>
+            <button name="send_hr_request">Send Request to HR</button>
+        </form>
+    </section>
+
+    <?php if (isset($_POST['send_hr_request']) && $message !== ''): ?>
+        <div class="flash-message <?php echo $messageType === 'error' ? 'flash-error' : ''; ?>"><?php echo guidance_escape($message); ?></div>
+    <?php endif; ?>
+
+    <section class="form-box" id="hr-request-form">
+        <div class="panel-heading">
+            <div>
+                <h2>Request Employee Information from HR</h2>
+                <p>Use this form to send requests to the HR department for employee-related information.</p>
+            </div>
+        </div>
+        <form method="POST" class="form-stack">
+            <input name="employee_id" id="employee-id-input" placeholder="Employee ID" required>
+            <select name="request_type" id="request-type-input" required>
+                <option value="">Select Request Type</option>
+                <option value="Verification">Verification</option>
+                <option value="Leave Balance">Leave Balance</option>
+                <option value="Salary Information">Salary Information</option>
+                <option value="Other">Other</option>
+            </select>
+            <textarea name="request_details" id="request-details-input" placeholder="Details of your request"></textarea>
+            <button name="send_hr_request">Send Request to HR</button>
+        </form>
     </section>
 
     <section class="dashboard-section compact">

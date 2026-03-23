@@ -71,7 +71,7 @@ export async function dispatchCounselingReportToPmed(
 ): Promise<TrackedGuidanceDispatch<GuidanceCounselingReport>> {
   return await trackGuidanceDispatch(
     'pmed',
-    'counseling_reports',
+    'counseling_report',
     {
       student_id: report.student_id,
       student_name: report.student_name,
