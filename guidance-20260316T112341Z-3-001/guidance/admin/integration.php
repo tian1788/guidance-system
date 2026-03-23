@@ -307,6 +307,59 @@ if (is_array($cachedHr) && ($nowTs - (int) ($cachedHr['stored_at'] ?? 0)) < $dat
 
 $registrarRows = $registrarDataset['rows'] ?? [];
 $hrRows = $hrDataset['rows'] ?? [];
+$registrarStudentIds = [];
+$guidanceRecordCounts = [];
+$prefectRecordCounts = [];
+
+foreach ($registrarRows as $registrarRow) {
+    $studentId = trim((string) ($registrarRow['student_id'] ?? ''));
+    if ($studentId !== '') {
+        $registrarStudentIds[$studentId] = $studentId;
+    }
+}
+
+if ($registrarStudentIds) {
+    $escapedStudentIds = array_map(
+        static function (string $studentId): string {
+            return guidance_integration_quote($studentId);
+        },
+        array_values($registrarStudentIds)
+    );
+    $studentIdInSql = implode(', ', $escapedStudentIds);
+
+    $guidanceCountsResult = $conn->query("SELECT student_id, COUNT(*) AS total_records
+        FROM guidance
+        WHERE student_id IS NOT NULL
+          AND student_id <> ''
+          AND student_id IN ({$studentIdInSql})
+        GROUP BY student_id");
+    if (is_object($guidanceCountsResult) && method_exists($guidanceCountsResult, 'fetch_assoc')) {
+        while ($countRow = $guidanceCountsResult->fetch_assoc()) {
+            $sid = trim((string) ($countRow['student_id'] ?? ''));
+            if ($sid !== '') {
+                $guidanceRecordCounts[$sid] = (int) ($countRow['total_records'] ?? 0);
+            }
+        }
+    }
+
+    $prefectCountsResult = $conn->query("SELECT student_id, COUNT(*) AS total_records
+        FROM integration_flows
+        WHERE direction='INBOUND'
+          AND target_department='guidance'
+          AND source_department='prefect'
+          AND student_id IS NOT NULL
+          AND student_id <> ''
+          AND student_id IN ({$studentIdInSql})
+        GROUP BY student_id");
+    if (is_object($prefectCountsResult) && method_exists($prefectCountsResult, 'fetch_assoc')) {
+        while ($countRow = $prefectCountsResult->fetch_assoc()) {
+            $sid = trim((string) ($countRow['student_id'] ?? ''));
+            if ($sid !== '') {
+                $prefectRecordCounts[$sid] = (int) ($countRow['total_records'] ?? 0);
+            }
+        }
+    }
+}
 
 $prefectFilterSql = '';
 if ($studentIdFilter !== '') {
@@ -633,22 +686,34 @@ guidance_render_shell_start(
                 <th>Name</th>
                 <th>Course / Year</th>
                 <th>Enrollment</th>
-                <th>Action</th>
+                <th>Guidance Record</th>
+                <th>Prefect Record</th>
             </tr>
             <?php if (!$registrarRows): ?>
-                <tr><td colspan="5">No Registrar records available.</td></tr>
+                <tr><td colspan="6">No Registrar records available.</td></tr>
             <?php else: ?>
                 <?php foreach ($registrarRows as $row): ?>
+                    <?php $registrarStudentId = trim((string) ($row['student_id'] ?? '')); ?>
+                    <?php $guidanceCount = $registrarStudentId !== '' ? (int) ($guidanceRecordCounts[$registrarStudentId] ?? 0) : 0; ?>
+                    <?php $prefectCount = $registrarStudentId !== '' ? (int) ($prefectRecordCounts[$registrarStudentId] ?? 0) : 0; ?>
                     <tr>
-                        <td><?php echo guidance_escape($row['student_id'] ?? ''); ?></td>
+                        <td><?php echo guidance_escape($registrarStudentId); ?></td>
                         <td><?php echo guidance_escape($row['student_name'] ?? ''); ?></td>
                         <td><?php echo guidance_escape(trim(($row['course'] ?? '-') . ' / ' . ($row['year_level'] ?? '-'))); ?></td>
                         <td><?php echo guidance_escape($row['enrollment_status'] ?? ''); ?></td>
                         <td>
-                            <form method="POST" class="form-stack">
-                                <input type="hidden" name="source_record_id" value="<?php echo guidance_escape($row['source_record_id'] ?? ''); ?>">
-                                <button name="sync_registrar_student">Fetch to Guidance</button>
-                            </form>
+                            <?php if ($guidanceCount > 0): ?>
+                                <span class="status-pill modern acknowledged">Has record (<?php echo (int) $guidanceCount; ?>)</span>
+                            <?php else: ?>
+                                <span class="status-pill modern queued">No record</span>
+                            <?php endif; ?>
+                        </td>
+                        <td>
+                            <?php if ($prefectCount > 0): ?>
+                                <span class="status-pill modern received">Has record (<?php echo (int) $prefectCount; ?>)</span>
+                            <?php else: ?>
+                                <span class="status-pill modern queued">No record</span>
+                            <?php endif; ?>
                         </td>
                     </tr>
                 <?php endforeach; ?>
