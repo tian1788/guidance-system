@@ -238,6 +238,8 @@ p{
     padding:24px 18px;
     box-sizing:border-box;
     box-shadow:inset -1px 0 0 rgba(255,255,255,0.06);
+    overflow-y:auto;
+    overflow-x:hidden;
 }
 .sidebar h2{
     color:#fff;
@@ -787,6 +789,7 @@ p{
         width:100%;
         height:auto;
         position:relative;
+        overflow:visible;
     }
     .main{
         margin-left:0;

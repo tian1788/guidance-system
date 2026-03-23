@@ -550,12 +550,11 @@ guidance_render_shell_start(
                 <th>Event</th>
                 <th>Status</th>
                 <th>Sent Report</th>
-                <th>Workflow</th>
                 <th>Action</th>
             </tr>
             <?php if (!$prefectInbox || $prefectInbox->num_rows === 0): ?>
                 <tr>
-                    <td colspan="8">No Prefect reports found.</td>
+                    <td colspan="7">No Prefect reports found.</td>
                 </tr>
             <?php else: ?>
                 <?php while ($row = $prefectInbox->fetch_assoc()): ?>
@@ -572,7 +571,6 @@ guidance_render_shell_start(
                         <td><?php echo guidance_escape($row['flow_type']); ?></td>
                         <td><span class="status-pill modern <?php echo strtolower(guidance_escape($row['status'])); ?>"><?php echo guidance_escape($row['status']); ?></span></td>
                         <td><span class="status-pill modern <?php echo strtolower(guidance_escape($sentReportStatus)); ?>"><?php echo guidance_escape($sentReportStatus); ?></span></td>
-                        <td><span class="status-pill modern <?php echo strtolower(guidance_escape(str_replace('_', '', $workflowStatus))); ?>"><?php echo guidance_escape(ucwords(str_replace('_', ' ', $workflowStatus))); ?></span></td>
                         <?php $viewConcern = trim((string) ($prefectPayload['concern'] ?? $prefectPayload['incident'] ?? $prefectPayload['summary'] ?? $row['payload_summary'] ?? '')); ?>
                         <?php $viewActionTaken = trim((string) ($prefectResponse['action_taken'] ?? $prefectPayload['action_taken'] ?? $prefectPayload['recommended_action'] ?? '')); ?>
                         <?php $viewNotes = trim((string) ($prefectResponse['review_notes'] ?? $prefectPayload['review_notes'] ?? '')); ?>
