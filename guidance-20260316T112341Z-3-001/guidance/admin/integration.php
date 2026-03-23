@@ -376,6 +376,66 @@ guidance_render_shell_start(
     <div class="flash-message <?php echo $messageType === 'error' ? 'flash-error' : ''; ?>"><?php echo guidance_escape($message); ?></div>
 <?php endif; ?>
 
+<style>
+    .outbound-controls {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 10px;
+        align-items: end;
+        margin-bottom: 12px;
+    }
+    .outbound-control {
+        display: grid;
+        gap: 6px;
+    }
+    .outbound-control label {
+        font-size: 12px;
+        font-weight: 700;
+        color: #5d6c86;
+        text-transform: uppercase;
+        letter-spacing: .04em;
+    }
+    .outbound-controls .search-wide {
+        grid-column: span 2;
+    }
+    .outbound-pagination {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-top: 12px;
+        flex-wrap: wrap;
+    }
+    .outbound-page-buttons {
+        display: inline-flex;
+        gap: 8px;
+        align-items: center;
+    }
+    .outbound-page-info {
+        font-size: 13px;
+        color: #5f7295;
+    }
+    .integration-outbound-table {
+        width: 100%;
+        min-width: 1100px;
+        table-layout: auto;
+    }
+    .integration-outbound-table th,
+    .integration-outbound-table td {
+        word-break: break-word;
+        overflow-wrap: anywhere;
+    }
+    .integration-outbound-table th:last-child,
+    .integration-outbound-table td:last-child {
+        min-width: 190px;
+    }
+    @media screen and (max-width: 768px) {
+        .outbound-controls .search-wide {
+            grid-column: span 1;
+        }
+    }
+</style>
+
 <section class="table-panel">
     <div class="panel-heading">
         <div>
@@ -631,7 +691,7 @@ guidance_render_shell_start(
     </div>
 </section>
 
-<div class="split-layout">
+<div>
     <section class="table-panel">
         <div class="panel-heading">
             <div>
@@ -640,61 +700,96 @@ guidance_render_shell_start(
             </div>
         </div>
         <div class="table-wrap">
-            <table>
-                <tr>
-                    <th>Date</th>
-                    <th>Route</th>
-                    <th>Event</th>
-                    <th>Target</th>
-                    <th>Student ID</th>
-                    <th>Student</th>
-                    <th>Status</th>
-                    <th>Success Report</th>
-                    <th>Archive</th>
-                    <th>Action</th>
-                </tr>
-                <?php if (is_object($outbound) && method_exists($outbound, 'fetch_assoc')): ?>
-                    <?php while ($row = $outbound->fetch_assoc()): ?>
-                        <?php $outboundResponse = guidance_decode_json_payload((string) ($row['response_payload'] ?? '')); ?>
-                        <?php $successReport = (($outboundResponse['success_report'] ?? false) || in_array((string) ($row['status'] ?? ''), ['Sent', 'Acknowledged'], true)); ?>
-                        <?php $archiveStatus = (string) ($outboundResponse['archive_status'] ?? ($successReport ? 'Active' : '-')); ?>
-                        <tr>
-                            <td><?php echo guidance_escape($row['created_at']); ?></td>
-                            <td><?php echo guidance_escape($row['route_key'] ?: '-'); ?></td>
-                            <td><?php echo guidance_escape($row['flow_type']); ?></td>
-                            <td><?php echo guidance_escape(guidance_integration_department_label($row['target_department'])); ?></td>
-                            <td><?php echo guidance_escape($row['student_id'] ?: '-'); ?></td>
-                            <td><?php echo guidance_escape($row['student_name'] ?: '-'); ?></td>
-                            <td><span class="status-pill modern <?php echo strtolower(guidance_escape($row['status'])); ?>"><?php echo guidance_escape($row['status']); ?></span></td>
-                            <td><?php echo $successReport ? 'Yes' : 'No'; ?></td>
-                            <td><?php echo guidance_escape($archiveStatus); ?></td>
-                            <td>
-                                <div class="stack-layout">
-                                    <form method="POST" class="form-stack">
-                                        <input type="hidden" name="id" value="<?php echo $row['id']; ?>">
-                                        <button name="mark_sent">Mark Sent</button>
-                                    </form>
-                                    <form method="POST" class="form-stack">
-                                        <input type="hidden" name="id" value="<?php echo $row['id']; ?>">
-                                        <textarea name="last_error" placeholder="Reason if failed"></textarea>
-                                        <button name="mark_failed" class="btn-danger">Mark Failed</button>
-                                    </form>
-                                    <?php if ($successReport && $archiveStatus !== 'Archived'): ?>
+            <div class="outbound-controls">
+                <div class="outbound-control search-wide">
+                    <label for="outbound-search">Search</label>
+                    <input id="outbound-search" type="search" placeholder="Search route, event, student ID, student name...">
+                </div>
+                <div class="outbound-control">
+                    <label for="outbound-filter-target">Target</label>
+                    <select id="outbound-filter-target">
+                        <option value="">All Targets</option>
+                    </select>
+                </div>
+                <div class="outbound-control">
+                    <label for="outbound-filter-status">Status</label>
+                    <select id="outbound-filter-status">
+                        <option value="">All Status</option>
+                    </select>
+                </div>
+                <div class="outbound-control">
+                    <label for="outbound-filter-archive">Archive</label>
+                    <select id="outbound-filter-archive">
+                        <option value="">All Archive</option>
+                    </select>
+                </div>
+            </div>
+            <table id="outbound-table" class="integration-outbound-table">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Route</th>
+                        <th>Event</th>
+                        <th>Target</th>
+                        <th>Student ID</th>
+                        <th>Student</th>
+                        <th>Status</th>
+                        <th>Success Report</th>
+                        <th>Archive</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <?php if (is_object($outbound) && method_exists($outbound, 'fetch_assoc')): ?>
+                        <?php while ($row = $outbound->fetch_assoc()): ?>
+                            <?php $outboundResponse = guidance_decode_json_payload((string) ($row['response_payload'] ?? '')); ?>
+                            <?php $successReport = (($outboundResponse['success_report'] ?? false) || in_array((string) ($row['status'] ?? ''), ['Sent', 'Acknowledged'], true)); ?>
+                            <?php $archiveStatus = (string) ($outboundResponse['archive_status'] ?? ($successReport ? 'Active' : '-')); ?>
+                            <tr>
+                                <td><?php echo guidance_escape($row['created_at']); ?></td>
+                                <td><?php echo guidance_escape($row['route_key'] ?: '-'); ?></td>
+                                <td><?php echo guidance_escape($row['flow_type']); ?></td>
+                                <td><?php echo guidance_escape(guidance_integration_department_label($row['target_department'])); ?></td>
+                                <td><?php echo guidance_escape($row['student_id'] ?: '-'); ?></td>
+                                <td><?php echo guidance_escape($row['student_name'] ?: '-'); ?></td>
+                                <td><span class="status-pill modern <?php echo strtolower(guidance_escape($row['status'])); ?>"><?php echo guidance_escape($row['status']); ?></span></td>
+                                <td><?php echo $successReport ? 'Yes' : 'No'; ?></td>
+                                <td><?php echo guidance_escape($archiveStatus); ?></td>
+                                <td>
+                                    <div class="stack-layout">
                                         <form method="POST" class="form-stack">
                                             <input type="hidden" name="id" value="<?php echo $row['id']; ?>">
-                                            <button name="archive_report">Archive</button>
+                                            <button name="mark_sent">Mark Sent</button>
                                         </form>
-                                    <?php endif; ?>
-                                </div>
-                            </td>
+                                        <form method="POST" class="form-stack">
+                                            <input type="hidden" name="id" value="<?php echo $row['id']; ?>">
+                                            <textarea name="last_error" placeholder="Reason if failed"></textarea>
+                                            <button name="mark_failed" class="btn-danger">Mark Failed</button>
+                                        </form>
+                                        <?php if ($successReport && $archiveStatus !== 'Archived'): ?>
+                                            <form method="POST" class="form-stack">
+                                                <input type="hidden" name="id" value="<?php echo $row['id']; ?>">
+                                                <button name="archive_report">Archive</button>
+                                            </form>
+                                        <?php endif; ?>
+                                    </div>
+                                </td>
+                            </tr>
+                        <?php endwhile; ?>
+                    <?php else: ?>
+                        <tr>
+                            <td colspan="10">Unable to load outbound tracking records.</td>
                         </tr>
-                    <?php endwhile; ?>
-                <?php else: ?>
-                    <tr>
-                        <td colspan="10">Unable to load outbound tracking records.</td>
-                    </tr>
-                <?php endif; ?>
+                    <?php endif; ?>
+                </tbody>
             </table>
+            <div class="outbound-pagination">
+                <div class="outbound-page-info" id="outbound-page-info">Showing 0 of 0 records</div>
+                <div class="outbound-page-buttons">
+                    <button type="button" id="outbound-prev-page">Previous</button>
+                    <button type="button" id="outbound-next-page">Next</button>
+                </div>
+            </div>
         </div>
     </section>
 </div>
@@ -866,6 +961,122 @@ guidance_render_shell_start(
             modal.style.display = 'none';
         }
     });
+
+    const outboundTable = document.getElementById('outbound-table');
+    const outboundSearch = document.getElementById('outbound-search');
+    const outboundFilterTarget = document.getElementById('outbound-filter-target');
+    const outboundFilterStatus = document.getElementById('outbound-filter-status');
+    const outboundFilterArchive = document.getElementById('outbound-filter-archive');
+    const outboundPrevPage = document.getElementById('outbound-prev-page');
+    const outboundNextPage = document.getElementById('outbound-next-page');
+    const outboundPageInfo = document.getElementById('outbound-page-info');
+    const outboundRowsPerPage = 10;
+    let outboundCurrentPage = 1;
+
+    if (
+        outboundTable &&
+        outboundTable.tBodies &&
+        outboundTable.tBodies[0] &&
+        outboundSearch &&
+        outboundFilterTarget &&
+        outboundFilterStatus &&
+        outboundFilterArchive &&
+        outboundPrevPage &&
+        outboundNextPage &&
+        outboundPageInfo
+    ) {
+        const allOutboundRows = Array.from(outboundTable.tBodies[0].rows);
+        const uniqueValues = (values) => Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b));
+
+        const targetValues = uniqueValues(allOutboundRows.map((row) => row.cells[3]?.textContent?.trim() || ''));
+        const statusValues = uniqueValues(allOutboundRows.map((row) => row.cells[6]?.textContent?.trim() || ''));
+        const archiveValues = uniqueValues(allOutboundRows.map((row) => row.cells[8]?.textContent?.trim() || ''));
+
+        const fillSelect = (select, values) => {
+            values.forEach((value) => {
+                const option = document.createElement('option');
+                option.value = value.toLowerCase();
+                option.textContent = value;
+                select.appendChild(option);
+            });
+        };
+
+        fillSelect(outboundFilterTarget, targetValues);
+        fillSelect(outboundFilterStatus, statusValues);
+        fillSelect(outboundFilterArchive, archiveValues);
+
+        const applyOutboundFilters = () => {
+            const searchText = outboundSearch.value.trim().toLowerCase();
+            const targetFilter = outboundFilterTarget.value;
+            const statusFilter = outboundFilterStatus.value;
+            const archiveFilter = outboundFilterArchive.value;
+
+            const filteredRows = allOutboundRows.filter((row) => {
+                const rowText = row.textContent.toLowerCase();
+                const targetText = (row.cells[3]?.textContent || '').trim().toLowerCase();
+                const statusText = (row.cells[6]?.textContent || '').trim().toLowerCase();
+                const archiveText = (row.cells[8]?.textContent || '').trim().toLowerCase();
+
+                const matchesSearch = searchText === '' || rowText.includes(searchText);
+                const matchesTarget = targetFilter === '' || targetText === targetFilter;
+                const matchesStatus = statusFilter === '' || statusText === statusFilter;
+                const matchesArchive = archiveFilter === '' || archiveText === archiveFilter;
+
+                return matchesSearch && matchesTarget && matchesStatus && matchesArchive;
+            });
+
+            const totalRows = filteredRows.length;
+            const totalPages = Math.max(1, Math.ceil(totalRows / outboundRowsPerPage));
+            if (outboundCurrentPage > totalPages) {
+                outboundCurrentPage = totalPages;
+            }
+            if (outboundCurrentPage < 1) {
+                outboundCurrentPage = 1;
+            }
+
+            const startIndex = (outboundCurrentPage - 1) * outboundRowsPerPage;
+            const endIndex = startIndex + outboundRowsPerPage;
+            const visibleRows = filteredRows.slice(startIndex, endIndex);
+
+            allOutboundRows.forEach((row) => {
+                row.style.display = 'none';
+            });
+            visibleRows.forEach((row) => {
+                row.style.display = '';
+            });
+
+            if (totalRows === 0) {
+                outboundPageInfo.textContent = 'Showing 0 of 0 records';
+            } else {
+                outboundPageInfo.textContent = `Showing ${startIndex + 1}-${Math.min(endIndex, totalRows)} of ${totalRows} records`;
+            }
+
+            outboundPrevPage.disabled = outboundCurrentPage <= 1;
+            outboundNextPage.disabled = outboundCurrentPage >= totalPages || totalRows === 0;
+        };
+
+        const resetToFirstPageAndApply = () => {
+            outboundCurrentPage = 1;
+            applyOutboundFilters();
+        };
+
+        outboundSearch.addEventListener('input', resetToFirstPageAndApply);
+        outboundFilterTarget.addEventListener('change', resetToFirstPageAndApply);
+        outboundFilterStatus.addEventListener('change', resetToFirstPageAndApply);
+        outboundFilterArchive.addEventListener('change', resetToFirstPageAndApply);
+
+        outboundPrevPage.addEventListener('click', () => {
+            outboundCurrentPage -= 1;
+            applyOutboundFilters();
+        });
+
+        outboundNextPage.addEventListener('click', () => {
+            outboundCurrentPage += 1;
+            applyOutboundFilters();
+        });
+
+        applyOutboundFilters();
+    }
 
 })();
 </script>
